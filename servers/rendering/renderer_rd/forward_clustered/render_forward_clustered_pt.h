@@ -32,6 +32,7 @@
 
 #include "servers/rendering/renderer_rd/forward_clustered/render_forward_clustered.h"
 #include "servers/rendering/renderer_rd/forward_clustered/render_raytracing.h"
+#include "servers/rendering/renderer_rd/shaders/raytracing/_rayquery.glsl.gen.h"
 
 namespace RendererSceneRenderImplementation {
 
@@ -46,6 +47,15 @@ class RenderForwardClusteredPT : public RenderForwardClustered {
 
 	bool _setup_rt();
 	void _age_out_motion_vectors(const RenderDataRD *p_render_data);
+private:
+	RayqueryShaderRD test_rayquery_shader;
+	RID test_shader_version;
+	RID test_shader_pipeline;
+	RID test_image;
+	bool test_shader_initialized = false;
+
+	void _initialize_test_shader();
+	void _run_test_shader(RID p_tlas);
 
 protected:
 	virtual void _render_scene(RenderDataRD *p_render_data, const Color &p_default_bg_color) override;

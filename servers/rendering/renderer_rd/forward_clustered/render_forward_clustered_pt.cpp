@@ -30,6 +30,7 @@
 
 #include "render_forward_clustered_pt.h"
 
+#include "core/os/memory.h"
 #include "servers/rendering/renderer_rd/environment/fog.h"
 #include "servers/rendering/renderer_rd/forward_clustered/scene_shader_raytracing.h"
 #include "servers/rendering/renderer_rd/storage_rd/light_storage.h"
@@ -38,6 +39,60 @@
 #include "servers/rendering/rendering_server_default.h" // IWYU pragma: keep. RENDER_TIMESTAMP macro uses RSG.
 
 using namespace RendererSceneRenderImplementation;
+
+void RenderForwardClusteredPT::_initialize_test_shader() {
+	if (test_shader_initialized) {
+		return;
+	}
+	RenderingDevice *rd = RD::get_singleton();
+	// 1. 初始化并编译 Shader
+	Vector<String> modes;
+	modes.push_back("");
+	test_rayquery_shader.initialize(modes);
+	test_shader_version = test_rayquery_shader.version_create();
+	RID shader_rid = test_rayquery_shader.version_get_shader(test_shader_version, 0);
+	test_shader_pipeline = rd->compute_pipeline_create(shader_rid);
+	// 2. 创建 512x512 的存储纹理 (Storage Image)
+	RD::TextureFormat tf;
+	tf.format = RD::DATA_FORMAT_R8G8B8A8_UNORM;
+	tf.width = 512;
+	tf.height = 512;
+	tf.usage_bits = RD::TEXTURE_USAGE_STORAGE_BIT | RD::TEXTURE_USAGE_CAN_COPY_FROM_BIT | RD::TEXTURE_USAGE_SAMPLING_BIT;
+	test_image = rd->texture_create(tf, RD::TextureView());
+	test_shader_initialized = true;
+}
+
+void RenderForwardClusteredPT::_run_test_shader(RID p_tlas) {
+	if (!p_tlas.is_valid()) {
+		return;
+	}
+	_initialize_test_shader();
+	RenderingDevice *rd = RD::get_singleton();
+	RID shader_rid = test_rayquery_shader.version_get_shader(test_shader_version, 0);
+
+	Vector<RD::Uniform> dispatch_args;
+	{
+		RD::Uniform u;
+		u.binding = 0;
+		u.uniform_type = RD::UNIFORM_TYPE_IMAGE;
+		u.append_id(test_image);
+		dispatch_args.push_back(u);
+	}
+	{
+		RD::Uniform u;
+		u.binding = 1;
+		u.uniform_type = RD::UNIFORM_TYPE_ACCELERATION_STRUCTURE;
+		u.append_id(p_tlas);
+		dispatch_args.push_back(u);
+	}
+	RID uniform_set = rd->uniform_set_create(dispatch_args, shader_rid, 0, /*p_linear_pool=*/true);
+
+	RD::ComputeListID compute_list = rd->compute_list_begin();
+	rd->compute_list_bind_compute_pipeline(compute_list, test_shader_pipeline);
+	rd->compute_list_bind_uniform_set(compute_list, uniform_set, 0);
+	rd->compute_list_dispatch_threads(compute_list, 512, 512, 1);
+	rd->compute_list_end();
+}
 
 void RenderForwardClusteredPT::_render_scene(RenderDataRD *p_render_data, const Color &p_default_bg_color) {
 	ERR_FAIL_NULL(p_render_data);
@@ -182,6 +237,9 @@ void RenderForwardClusteredPT::_render_scene(RenderDataRD *p_render_data, const 
 		RTViewportState *rt_state = raytracing->build_tlas(p_render_data, rt_flags);
 		if (rt_state) {
 			rt_uniform_set = raytracing->update_uniform_set(rt_state, p_render_data, rt_flags);
+
+			//Test
+			// _run_test_shader(rt_state->tlas);
 		}
 	} else if (rb_data.is_valid() && raytracing && raytracing->dlss_rr_has_buffers(rb.ptr())) {
 		// No RT shader available: free DLSS RR buffers so DLSS falls back to SR.
@@ -490,6 +548,13 @@ void RenderForwardClusteredPT::_render_scene(RenderDataRD *p_render_data, const 
 
 	_render_buffers_post_process_and_tonemap(p_render_data);
 
+	//Test Compute Shader
+	// if (test_image.is_valid()) {
+	// 	RID render_target = rb->get_render_target();
+	// 	RID fb = RendererRD::TextureStorage::get_singleton()->render_target_get_rd_framebuffer(render_target);
+	// 	copy_effects->copy_to_fb_rect(test_image, fb, Rect2(Vector2(), rb->get_internal_size()), false, false);
+	// }
+
 	_render_buffers_debug_draw(p_render_data);
 }
 
@@ -604,4 +669,10 @@ RenderForwardClusteredPT::~RenderForwardClusteredPT() {
 	if (raytracing) {
 		memdelete(raytracing);
 	}
+	// if (test_shader_version.is_valid()) {
+	// 	test_rayquery_shader.version_free(test_shader_version);
+	// }
+	// if (test_image.is_valid()) {
+	// 	RD::get_singleton()->free_rid(test_image);
+	// }
 }
