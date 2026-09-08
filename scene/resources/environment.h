@@ -190,6 +190,19 @@ private:
 	float sdfgi_probe_bias = 1.1;
 	void _update_sdfgi();
 
+	// DDGI
+	bool ddgi_enabled = false;
+	Vector3i ddgi_probe_count = Vector3i(16, 8, 16);
+	Vector3 ddgi_probe_spacing = Vector3(2.0, 2.0, 2.0);
+	int ddgi_rays_per_probe = 64;
+	float ddgi_max_ray_distance = 20.0;
+	float ddgi_hysteresis = 0.97;
+	float ddgi_normal_bias = 0.2;
+	float ddgi_view_bias = 0.1;
+	float ddgi_energy = 1.0;
+	bool ddgi_read_sky = true;
+	void _update_ddgi();
+
 	// Pathtracing
 	bool pathtracing_enabled = false;
 	PathtracingDebugMode pathtracing_debug_mode = RT_DEBUG_DISABLED;
@@ -384,6 +397,28 @@ public:
 	float get_sdfgi_normal_bias() const;
 	void set_sdfgi_probe_bias(float p_bias);
 	float get_sdfgi_probe_bias() const;
+
+	// DDGI
+	void set_ddgi_enabled(bool p_enabled);
+	bool is_ddgi_enabled() const;
+	void set_ddgi_probe_count(const Vector3i &p_probe_count);
+	Vector3i get_ddgi_probe_count() const;
+	void set_ddgi_probe_spacing(const Vector3 &p_probe_spacing);
+	Vector3 get_ddgi_probe_spacing() const;
+	void set_ddgi_rays_per_probe(int p_rays_per_probe);
+	int get_ddgi_rays_per_probe() const;
+	void set_ddgi_max_ray_distance(float p_max_ray_distance);
+	float get_ddgi_max_ray_distance() const;
+	void set_ddgi_hysteresis(float p_hysteresis);
+	float get_ddgi_hysteresis() const;
+	void set_ddgi_normal_bias(float p_normal_bias);
+	float get_ddgi_normal_bias() const;
+	void set_ddgi_view_bias(float p_view_bias);
+	float get_ddgi_view_bias() const;
+	void set_ddgi_energy(float p_energy);
+	float get_ddgi_energy() const;
+	void set_ddgi_read_sky(bool p_read_sky);
+	bool is_ddgi_reading_sky() const;
 
 	// Pathtracing
 	void set_pathtracing_enabled(bool p_enabled);

@@ -3294,10 +3294,10 @@ void RendererSceneCull::_scene_cull(CullData &cull_data, InstanceCullResult &cul
 				}
 			}
 
-			// RT: collect ALL instances inside the camera AABB for TLAS and light gathering.
-			// Frustum-visible instances are guaranteed to be inside the AABB (superset),
-			// so skip the AABB test for them. Only test AABB for non-frustum instances.
-			// Mask out editor-only layers (20+) so gizmos/grid don't enter the TLAS.
+			// RT: collect instances required by the active consumers for TLAS and
+			// light gathering. Path tracing includes raster-visible instances as a
+			// fast path; DDGI-only collection always tests the probe-grid bounds.
+			// Apply camera visibility and mask editor-only layers (20+).
 			//
 			// Visibility-range parity: instances that failed VIS_CHECK for raster (i.e. they
 			// have NEEDS_CHECK flags and are off-frustum) must be re-checked here, otherwise
@@ -3308,9 +3308,10 @@ void RendererSceneCull::_scene_cull(CullData &cull_data, InstanceCullResult &cul
 			// Prefer the parent: exclude the child from RT until the parent becomes
 			// HIDDEN_CLOSE_RANGE (fully faded out), matching the point where raster
 			// switches over. In-frustum children are subject to the same rule.
-			if (cull_data.cull->rt_enabled && (idata.layer_mask & ((1 << 20) - 1))) {
-				// For off-frustum instances, also run VIS_CHECK to match raster gating.
-				bool rt_in_range = in_frustum || (cull_data.scenario->instance_aabbs[i].in_aabb(cull_data.cull->rt_aabb) && VIS_CHECK);
+			if (cull_data.cull->rt_enabled && (idata.layer_mask & cull_data.cull->rt_visible_layers)) {
+				// Bounds-selected instances also run VIS_CHECK to match raster gating.
+				bool rt_in_range = (cull_data.cull->rt_include_frustum && in_frustum) ||
+						(cull_data.scenario->instance_aabbs[i].in_aabb(cull_data.cull->rt_aabb) && VIS_CHECK);
 				if (rt_in_range) {
 					// Exclude visibility-parent children while their parent is in the
 					// FADE_CHILDREN cross-fade band. PT is binary: only one LOD at a time.
@@ -3328,10 +3329,13 @@ void RendererSceneCull::_scene_cull(CullData &cull_data, InstanceCullResult &cul
 						uint32_t base_type = idata.flags & InstanceData::FLAG_BASE_TYPE_MASK;
 						if (base_type == RSE::INSTANCE_LIGHT) {
 							cull_result.rt_light_instances.push_back(RID::from_uint64(idata.instance_data_rid));
-						} else if ((base_type == RSE::INSTANCE_MESH || base_type == RSE::INSTANCE_MULTIMESH) &&
-								!(idata.flags & InstanceData::FLAG_CAST_SHADOWS_ONLY)) {
-							cull_result.rt_geometry_instances.push_back(idata.instance_geometry);
-							mesh_visible = true; // For skinned/deformed meshes..
+						} else if (base_type == RSE::INSTANCE_MESH || base_type == RSE::INSTANCE_MULTIMESH) {
+							const bool shadows_only = idata.flags & InstanceData::FLAG_CAST_SHADOWS_ONLY;
+							const bool needed_by_ddgi = cull_data.cull->rt_consumers.has_flag(RT_SCENE_CONSUMER_DDGI);
+							if (!shadows_only || needed_by_ddgi) {
+								cull_result.rt_geometry_instances.push_back(idata.instance_geometry);
+								mesh_visible = true; // For skinned/deformed meshes..
+							}
 						}
 					}
 				}
@@ -3393,7 +3397,11 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 
 	scene_render->set_scene_pass(render_pass);
 
+	bool ddgi_active = false;
+	AABB ddgi_bounds;
 	if (p_reflection_probe.is_null()) {
+		ddgi_active = scene_render->ddgi_prepare_frame(p_render_buffers, p_environment, p_scenario, camera_position, ddgi_bounds);
+
 		//no rendering code here, this is only to set up what needs to be done, request regions, etc.
 		scene_render->sdfgi_update(p_render_buffers, p_environment, camera_position); //update conditions for SDFGI (whether its used or not)
 	}
@@ -3436,14 +3444,36 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 	Vector<Plane> planes = p_camera_data->main_projection.get_projection_planes(p_camera_data->main_transform);
 	cull.frustum = Frustum(planes);
 
-	// RT: build wider AABB cull volume for TLAS and light gathering.
-	cull.rt_enabled = p_environment.is_valid() &&
-			scene_render->environment_get_pathtracing_enabled(p_environment);
-	if (cull.rt_enabled) {
+	// Build the union of the active RT consumers' cull volumes.
+	cull.rt_consumers.clear();
+	cull.rt_include_frustum = false;
+	cull.rt_visible_layers = p_visible_layers & ((1u << 20) - 1u);
+
+	if (p_reflection_probe.is_null() &&
+			p_environment.is_valid() &&
+			scene_render->environment_get_pathtracing_enabled(p_environment)) {
+		cull.rt_consumers.set_flag(RT_SCENE_CONSUMER_PATH_TRACING);
+	}
+	if (ddgi_active) {
+		cull.rt_consumers.set_flag(RT_SCENE_CONSUMER_DDGI);
+	}
+
+	bool has_rt_bounds = false;
+	if (cull.rt_consumers.has_flag(RT_SCENE_CONSUMER_PATH_TRACING)) {
 		float z_far = p_camera_data->main_projection.get_z_far();
 		Vector3 cam_origin = p_camera_data->main_transform.origin;
 		cull.rt_aabb = AABB(cam_origin - Vector3(z_far, z_far, z_far), Vector3(z_far, z_far, z_far) * 2.0);
+		cull.rt_include_frustum = true;
+		has_rt_bounds = true;
 	}
+	if (cull.rt_consumers.has_flag(RT_SCENE_CONSUMER_DDGI)) {
+		cull.rt_aabb = has_rt_bounds ? cull.rt_aabb.merge(ddgi_bounds) : ddgi_bounds;
+		has_rt_bounds = true;
+	}
+	if (!has_rt_bounds) {
+		cull.rt_aabb = AABB();
+	}
+	cull.rt_enabled = !cull.rt_consumers.is_empty() && has_rt_bounds;
 
 	Vector<RID> directional_lights;
 	// directional lights

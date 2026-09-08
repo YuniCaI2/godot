@@ -1710,6 +1710,7 @@ public:
 	void compute_list_bind_compute_pipeline(ComputeListID p_list, RID p_compute_pipeline);
 	void compute_list_bind_uniform_set(ComputeListID p_list, RID p_uniform_set, uint32_t p_index);
 	void compute_list_set_push_constant(ComputeListID p_list, const void *p_data, uint32_t p_data_size);
+	void compute_list_add_buffer_dependency(ComputeListID p_list, RID p_buffer, bool p_writable = false);
 	void compute_list_dispatch(ComputeListID p_list, uint32_t p_x_groups, uint32_t p_y_groups, uint32_t p_z_groups);
 	void compute_list_dispatch_threads(ComputeListID p_list, uint32_t p_x_threads, uint32_t p_y_threads, uint32_t p_z_threads);
 	void compute_list_dispatch_indirect(ComputeListID p_list, RID p_buffer, uint32_t p_offset);

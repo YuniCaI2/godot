@@ -56,6 +56,11 @@
 #define RB_TEX_NORMAL_ROUGHNESS_MSAA SNAME("normal_roughness_msaa")
 #define RB_TEX_VOXEL_GI SNAME("voxel_gi")
 #define RB_TEX_VOXEL_GI_MSAA SNAME("voxel_gi_msaa")
+
+namespace RendererRD {
+class DDGI;
+}
+
 namespace RendererSceneRenderImplementation {
 
 class RenderForwardClustered : public RendererSceneRenderRD {
@@ -90,6 +95,15 @@ protected:
 	/* Scene Shader */
 
 	SceneShaderForwardClustered scene_shader;
+
+	/* Raytracing scene */
+
+	// Sole owner of the shared RT scene service. Created lazily for any
+	// supported consumer.
+	RenderRaytracing *raytracing = nullptr;
+
+	// Sole owner of the DDGI facade. Per-viewport state is owned by render buffers.
+	RendererRD::DDGI *ddgi = nullptr;
 
 public:
 	/* Framebuffer */
@@ -457,7 +471,7 @@ protected:
 
 	static RenderForwardClustered *singleton;
 
-	uint32_t _setup_environment(const RenderDataRD *p_render_data, bool p_no_fog, const Size2i &p_screen_size, const Size2 &p_viewport_size, const Color &p_default_bg_color, bool p_opaque_render_buffers = false, bool p_apply_alpha_multiplier = false, bool p_pancake_shadows = false);
+	uint32_t _setup_environment(const RenderDataRD *p_render_data, bool p_no_fog, const Size2i &p_screen_size, const Size2 &p_viewport_size, const Color &p_default_bg_color, bool p_opaque_render_buffers = false, bool p_apply_alpha_multiplier = false, bool p_pancake_shadows = false, bool p_disable_ssil = false);
 	void _setup_voxelgis(const PagedArray<RID> &p_voxelgis);
 	void _setup_lightmaps(const RenderDataRD *p_render_data, const PagedArray<RID> &p_lightmaps, const Transform3D &p_cam_transform);
 	static uint32_t _count_directional_lights(const RenderDataRD *p_render_data);
@@ -486,7 +500,7 @@ protected:
 	void _render_list_with_draw_list(RenderListParameters *p_params, RID p_framebuffer, BitField<RD::DrawFlags> p_draw_flags = RD::DRAW_DEFAULT_ALL, const Vector<Color> &p_clear_color_values = Vector<Color>(), float p_clear_depth_value = 0.0, uint32_t p_clear_stencil_value = 0, const Rect2 &p_region = Rect2());
 
 	void _fill_instance_data(RenderListType p_render_list, int *p_render_info = nullptr, uint32_t p_offset = 0, int32_t p_max_elements = -1, bool p_update_buffer = true);
-	void _fill_render_list(RenderListType p_render_list, const RenderDataRD *p_render_data, PassMode p_pass_mode, bool p_using_sdfgi = false, bool p_using_opaque_gi = false, bool p_using_motion_pass = false, bool p_append = false, bool p_alpha_only = false);
+	void _fill_render_list(RenderListType p_render_list, const RenderDataRD *p_render_data, PassMode p_pass_mode, bool p_using_sdfgi = false, bool p_using_opaque_gi = false, bool p_using_motion_pass = false, bool p_append = false, bool p_alpha_only = false, bool p_using_ddgi = false);
 
 	HashMap<Size2i, RID> sdfgi_framebuffer_size_cache;
 
@@ -854,6 +868,9 @@ protected:
 
 	Scale3DMode _resolve_scale_3d_mode(Ref<RenderSceneBuffersRD> p_render_buffers) const;
 	void _render_3d_upscaling(const RenderDataRD *p_render_data, Scale3DMode p_scale_type, bool p_using_taa, double p_time_step, const DLSSRRGuideBuffers &p_dlss_rr);
+	bool _ensure_rt_scene(BitField<RTSceneConsumer> p_consumers);
+	RTSceneSnapshot _prepare_rt_scene(const RenderDataRD *p_render_data, BitField<RTSceneConsumer> p_consumers, uint32_t p_rt_flags);
+	RTViewportState *_get_rt_viewport_state(const RTSceneSnapshot &p_snapshot) const;
 	virtual void _free_rt_viewport_state(RenderSceneBuffersRD *p_render_buffers);
 
 	virtual void _render_material(const Transform3D &p_cam_transform, const Projection &p_cam_projection, bool p_cam_orthogonal, const PagedArray<RenderGeometryInstance *> &p_instances, RID p_framebuffer, const Rect2i &p_region, float p_exposure_normalization) override;
@@ -876,6 +893,7 @@ public:
 
 	/* SDFGI UPDATE */
 
+	virtual bool ddgi_prepare_frame(const Ref<RenderSceneBuffers> &p_render_buffers, RID p_environment, RID p_scenario, const Vector3 &p_camera_position, AABB &r_bounds) override;
 	virtual void sdfgi_update(const Ref<RenderSceneBuffers> &p_render_buffers, RID p_environment, const Vector3 &p_world_position) override;
 	virtual int sdfgi_get_pending_region_count(const Ref<RenderSceneBuffers> &p_render_buffers) const override;
 	virtual AABB sdfgi_get_pending_region_bounds(const Ref<RenderSceneBuffers> &p_render_buffers, int p_region) const override;

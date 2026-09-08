@@ -603,6 +603,125 @@ void Environment::_update_sdfgi() {
 			sdfgi_probe_bias);
 }
 
+// DDGI
+
+void Environment::set_ddgi_enabled(bool p_enabled) {
+	ddgi_enabled = p_enabled;
+	_update_ddgi();
+}
+
+bool Environment::is_ddgi_enabled() const {
+	return ddgi_enabled;
+}
+
+void Environment::set_ddgi_probe_count(const Vector3i &p_probe_count) {
+	ddgi_probe_count = Vector3i(
+			CLAMP(p_probe_count.x, 1, 64),
+			CLAMP(p_probe_count.y, 1, 64),
+			CLAMP(p_probe_count.z, 1, 64));
+	_update_ddgi();
+}
+
+Vector3i Environment::get_ddgi_probe_count() const {
+	return ddgi_probe_count;
+}
+
+void Environment::set_ddgi_probe_spacing(const Vector3 &p_probe_spacing) {
+	ERR_FAIL_COND_MSG(!p_probe_spacing.is_finite(), "DDGI probe spacing must be finite.");
+	ddgi_probe_spacing = Vector3(
+			MAX(p_probe_spacing.x, 0.01f),
+			MAX(p_probe_spacing.y, 0.01f),
+			MAX(p_probe_spacing.z, 0.01f));
+	_update_ddgi();
+}
+
+Vector3 Environment::get_ddgi_probe_spacing() const {
+	return ddgi_probe_spacing;
+}
+
+void Environment::set_ddgi_rays_per_probe(int p_rays_per_probe) {
+	ddgi_rays_per_probe = CLAMP(p_rays_per_probe, 1, 1024);
+	_update_ddgi();
+}
+
+int Environment::get_ddgi_rays_per_probe() const {
+	return ddgi_rays_per_probe;
+}
+
+void Environment::set_ddgi_max_ray_distance(float p_max_ray_distance) {
+	ERR_FAIL_COND_MSG(!Math::is_finite(p_max_ray_distance), "DDGI maximum ray distance must be finite.");
+	ddgi_max_ray_distance = MAX(p_max_ray_distance, 0.01f);
+	_update_ddgi();
+}
+
+float Environment::get_ddgi_max_ray_distance() const {
+	return ddgi_max_ray_distance;
+}
+
+void Environment::set_ddgi_hysteresis(float p_hysteresis) {
+	ERR_FAIL_COND_MSG(!Math::is_finite(p_hysteresis), "DDGI hysteresis must be finite.");
+	ddgi_hysteresis = CLAMP(p_hysteresis, 0.0f, 0.9999f);
+	_update_ddgi();
+}
+
+float Environment::get_ddgi_hysteresis() const {
+	return ddgi_hysteresis;
+}
+
+void Environment::set_ddgi_normal_bias(float p_normal_bias) {
+	ERR_FAIL_COND_MSG(!Math::is_finite(p_normal_bias), "DDGI normal bias must be finite.");
+	ddgi_normal_bias = MAX(p_normal_bias, 0.0f);
+	_update_ddgi();
+}
+
+float Environment::get_ddgi_normal_bias() const {
+	return ddgi_normal_bias;
+}
+
+void Environment::set_ddgi_view_bias(float p_view_bias) {
+	ERR_FAIL_COND_MSG(!Math::is_finite(p_view_bias), "DDGI view bias must be finite.");
+	ddgi_view_bias = MAX(p_view_bias, 0.0f);
+	_update_ddgi();
+}
+
+float Environment::get_ddgi_view_bias() const {
+	return ddgi_view_bias;
+}
+
+void Environment::set_ddgi_energy(float p_energy) {
+	ERR_FAIL_COND_MSG(!Math::is_finite(p_energy), "DDGI energy must be finite.");
+	ddgi_energy = MAX(p_energy, 0.0f);
+	_update_ddgi();
+}
+
+float Environment::get_ddgi_energy() const {
+	return ddgi_energy;
+}
+
+void Environment::set_ddgi_read_sky(bool p_read_sky) {
+	ddgi_read_sky = p_read_sky;
+	_update_ddgi();
+}
+
+bool Environment::is_ddgi_reading_sky() const {
+	return ddgi_read_sky;
+}
+
+void Environment::_update_ddgi() {
+	RS::get_singleton()->environment_set_ddgi(
+			environment,
+			ddgi_enabled,
+			ddgi_probe_count,
+			ddgi_probe_spacing,
+			ddgi_rays_per_probe,
+			ddgi_max_ray_distance,
+			ddgi_hysteresis,
+			ddgi_normal_bias,
+			ddgi_view_bias,
+			ddgi_energy,
+			ddgi_read_sky);
+}
+
 // Pathtracing
 
 void Environment::set_pathtracing_enabled(bool p_enabled) {
@@ -1487,6 +1606,41 @@ void Environment::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "sdfgi_normal_bias"), "set_sdfgi_normal_bias", "get_sdfgi_normal_bias");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "sdfgi_probe_bias"), "set_sdfgi_probe_bias", "get_sdfgi_probe_bias");
 
+	// DDGI
+
+	ClassDB::bind_method(D_METHOD("set_ddgi_enabled", "enabled"), &Environment::set_ddgi_enabled);
+	ClassDB::bind_method(D_METHOD("is_ddgi_enabled"), &Environment::is_ddgi_enabled);
+	ClassDB::bind_method(D_METHOD("set_ddgi_probe_count", "probe_count"), &Environment::set_ddgi_probe_count);
+	ClassDB::bind_method(D_METHOD("get_ddgi_probe_count"), &Environment::get_ddgi_probe_count);
+	ClassDB::bind_method(D_METHOD("set_ddgi_probe_spacing", "probe_spacing"), &Environment::set_ddgi_probe_spacing);
+	ClassDB::bind_method(D_METHOD("get_ddgi_probe_spacing"), &Environment::get_ddgi_probe_spacing);
+	ClassDB::bind_method(D_METHOD("set_ddgi_rays_per_probe", "rays_per_probe"), &Environment::set_ddgi_rays_per_probe);
+	ClassDB::bind_method(D_METHOD("get_ddgi_rays_per_probe"), &Environment::get_ddgi_rays_per_probe);
+	ClassDB::bind_method(D_METHOD("set_ddgi_max_ray_distance", "max_ray_distance"), &Environment::set_ddgi_max_ray_distance);
+	ClassDB::bind_method(D_METHOD("get_ddgi_max_ray_distance"), &Environment::get_ddgi_max_ray_distance);
+	ClassDB::bind_method(D_METHOD("set_ddgi_hysteresis", "hysteresis"), &Environment::set_ddgi_hysteresis);
+	ClassDB::bind_method(D_METHOD("get_ddgi_hysteresis"), &Environment::get_ddgi_hysteresis);
+	ClassDB::bind_method(D_METHOD("set_ddgi_normal_bias", "normal_bias"), &Environment::set_ddgi_normal_bias);
+	ClassDB::bind_method(D_METHOD("get_ddgi_normal_bias"), &Environment::get_ddgi_normal_bias);
+	ClassDB::bind_method(D_METHOD("set_ddgi_view_bias", "view_bias"), &Environment::set_ddgi_view_bias);
+	ClassDB::bind_method(D_METHOD("get_ddgi_view_bias"), &Environment::get_ddgi_view_bias);
+	ClassDB::bind_method(D_METHOD("set_ddgi_energy", "energy"), &Environment::set_ddgi_energy);
+	ClassDB::bind_method(D_METHOD("get_ddgi_energy"), &Environment::get_ddgi_energy);
+	ClassDB::bind_method(D_METHOD("set_ddgi_read_sky", "read_sky"), &Environment::set_ddgi_read_sky);
+	ClassDB::bind_method(D_METHOD("is_ddgi_reading_sky"), &Environment::is_ddgi_reading_sky);
+
+	ADD_GROUP("DDGI", "ddgi_");
+	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "ddgi_enabled", PROPERTY_HINT_GROUP_ENABLE), "set_ddgi_enabled", "is_ddgi_enabled");
+	ADD_PROPERTY(PropertyInfo(Variant::VECTOR3I, "ddgi_probe_count", PROPERTY_HINT_RANGE, "1,64,1"), "set_ddgi_probe_count", "get_ddgi_probe_count");
+	ADD_PROPERTY(PropertyInfo(Variant::VECTOR3, "ddgi_probe_spacing", PROPERTY_HINT_RANGE, "0.01,64,0.01,or_greater,suffix:m"), "set_ddgi_probe_spacing", "get_ddgi_probe_spacing");
+	ADD_PROPERTY(PropertyInfo(Variant::INT, "ddgi_rays_per_probe", PROPERTY_HINT_RANGE, "1,1024,1"), "set_ddgi_rays_per_probe", "get_ddgi_rays_per_probe");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "ddgi_max_ray_distance", PROPERTY_HINT_RANGE, "0.01,1000,0.01,or_greater,suffix:m"), "set_ddgi_max_ray_distance", "get_ddgi_max_ray_distance");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "ddgi_hysteresis", PROPERTY_HINT_RANGE, "0,0.9999,0.0001"), "set_ddgi_hysteresis", "get_ddgi_hysteresis");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "ddgi_normal_bias", PROPERTY_HINT_RANGE, "0,10,0.01,or_greater,suffix:m"), "set_ddgi_normal_bias", "get_ddgi_normal_bias");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "ddgi_view_bias", PROPERTY_HINT_RANGE, "0,10,0.01,or_greater,suffix:m"), "set_ddgi_view_bias", "get_ddgi_view_bias");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "ddgi_energy", PROPERTY_HINT_RANGE, "0,16,0.01,or_greater"), "set_ddgi_energy", "get_ddgi_energy");
+	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "ddgi_read_sky"), "set_ddgi_read_sky", "is_ddgi_reading_sky");
+
 	// Pathtracing
 
 	ClassDB::bind_method(D_METHOD("set_pathtracing_enabled", "enabled"), &Environment::set_pathtracing_enabled);
@@ -1756,6 +1910,7 @@ Environment::Environment() {
 	_update_ssao();
 	_update_ssil();
 	_update_sdfgi();
+	_update_ddgi();
 	_update_pathtracing();
 	_update_glow();
 	_update_fog();

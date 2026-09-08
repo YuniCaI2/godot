@@ -30,7 +30,6 @@
 
 #include "render_forward_clustered_pt.h"
 
-#include "core/os/memory.h"
 #include "servers/rendering/renderer_rd/environment/fog.h"
 #include "servers/rendering/renderer_rd/forward_clustered/scene_shader_raytracing.h"
 #include "servers/rendering/renderer_rd/storage_rd/light_storage.h"
@@ -109,7 +108,7 @@ void RenderForwardClusteredPT::_render_scene(RenderDataRD *p_render_data, const 
 
 	const bool use_rt = !is_reflection_probe && p_render_data->environment.is_valid() &&
 			RendererEnvironmentStorage::get_singleton()->environment_get_pathtracing_enabled(p_render_data->environment) &&
-			_setup_rt();
+			_ensure_rt_scene(RT_SCENE_CONSUMER_PATH_TRACING);
 	if (!use_rt) {
 		_age_out_motion_vectors(p_render_data);
 
@@ -215,8 +214,9 @@ void RenderForwardClusteredPT::_render_scene(RenderDataRD *p_render_data, const 
 	// here and reused at trace-dispatch time below so the uniform set and the
 	// pipeline agree on spec-constant values.
 	uint32_t rt_flags = SceneShaderRaytracing::RT_FLAG_NONE;
-	// Captured from build_tlas/update_uniform_set so the trace-dispatch block
+	// Captured from build_scene/update_uniform_set so the trace-dispatch block
 	// below can bind without RenderRaytracing keeping hidden "current" state.
+	RTSceneSnapshot rt_scene_snapshot;
 	RID rt_uniform_set;
 	bool using_depth_reconstruct = false;
 
@@ -234,7 +234,8 @@ void RenderForwardClusteredPT::_render_scene(RenderDataRD *p_render_data, const 
 			raytracing->dlss_rr_free_buffers(rb.ptr());
 		}
 
-		RTViewportState *rt_state = raytracing->build_tlas(p_render_data, rt_flags);
+		rt_scene_snapshot = _prepare_rt_scene(p_render_data, RT_SCENE_CONSUMER_PATH_TRACING, rt_flags);
+		RTViewportState *rt_state = _get_rt_viewport_state(rt_scene_snapshot);
 		if (rt_state) {
 			rt_uniform_set = raytracing->update_uniform_set(rt_state, p_render_data, rt_flags);
 
@@ -404,7 +405,7 @@ void RenderForwardClusteredPT::_render_scene(RenderDataRD *p_render_data, const 
 		}
 
 		// Make sure BDA referenced buffers are registered as dependencies -- these cannot be inferred by the draw graph.
-		raytracing->register_raytracing_buffer_dependencies(raytracing_list);
+		raytracing->register_raytracing_buffer_dependencies(raytracing_list, rt_scene_snapshot);
 
 		// Raytracing dispatches at internal (pre-upscale) size
 		Size2i rt_size = rb->get_internal_size();
@@ -558,30 +559,6 @@ void RenderForwardClusteredPT::_render_scene(RenderDataRD *p_render_data, const 
 	_render_buffers_debug_draw(p_render_data);
 }
 
-// Raytracing methods
-
-bool RenderForwardClusteredPT::_setup_rt() {
-	if (!RD::get_singleton()->has_feature(RD::SUPPORTS_RAYTRACING_PIPELINE)) {
-		WARN_PRINT_ONCE("Raytracing not supported on this device.");
-		return false;
-	}
-
-	if (!raytracing) {
-		raytracing = memnew(RenderRaytracing);
-		raytracing->initialize(this);
-		raytracing->shader = SceneShaderRaytracing::get_singleton();
-		String rt_defines;
-		rt_defines += "\n#define RT 1\n";
-		rt_defines += "\n#define MAX_ROUGHNESS_LOD " + itos(get_roughness_layers() - 1) + ".0\n";
-		if (is_using_radiance_octmap_array()) {
-			rt_defines += "\n#define USE_RADIANCE_OCTMAP_ARRAY \n";
-		}
-		raytracing->shader->init(rt_defines);
-	}
-
-	return true;
-}
-
 void RenderForwardClusteredPT::_age_out_motion_vectors(const RenderDataRD *p_render_data) {
 	if (!p_render_data) {
 		return;
@@ -608,14 +585,6 @@ void RenderForwardClusteredPT::_age_out_motion_vectors(const RenderDataRD *p_ren
 				inst->age_out_motion(frame);
 			}
 		}
-	}
-}
-
-void RenderForwardClusteredPT::_free_rt_viewport_state(RenderSceneBuffersRD *p_render_buffers) {
-	ERR_FAIL_NULL(p_render_buffers);
-	p_render_buffers->clear_context(RB_SCOPE_DLSS_RR);
-	if (raytracing) {
-		raytracing->free_viewport_state(p_render_buffers);
 	}
 }
 
@@ -666,9 +635,6 @@ RenderForwardClusteredPT::RenderForwardClusteredPT() {
 }
 
 RenderForwardClusteredPT::~RenderForwardClusteredPT() {
-	if (raytracing) {
-		memdelete(raytracing);
-	}
 	// if (test_shader_version.is_valid()) {
 	// 	test_rayquery_shader.version_free(test_shader_version);
 	// }

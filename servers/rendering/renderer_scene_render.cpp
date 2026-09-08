@@ -705,6 +705,52 @@ RSE::EnvironmentSDFGIYScale RendererSceneRender::environment_get_sdfgi_y_scale(R
 	return environment_storage.environment_get_sdfgi_y_scale(p_env);
 }
 
+// DDGI
+
+void RendererSceneRender::environment_set_ddgi(RID p_env, bool p_enable, const Vector3i &p_probe_count, const Vector3 &p_probe_spacing, int p_rays_per_probe, float p_max_ray_distance, float p_hysteresis, float p_normal_bias, float p_view_bias, float p_energy, bool p_read_sky) {
+	environment_storage.environment_set_ddgi(p_env, p_enable, p_probe_count, p_probe_spacing, p_rays_per_probe, p_max_ray_distance, p_hysteresis, p_normal_bias, p_view_bias, p_energy, p_read_sky);
+}
+
+bool RendererSceneRender::environment_get_ddgi_enabled(RID p_env) const {
+	return environment_storage.environment_get_ddgi_enabled(p_env);
+}
+
+Vector3i RendererSceneRender::environment_get_ddgi_probe_count(RID p_env) const {
+	return environment_storage.environment_get_ddgi_probe_count(p_env);
+}
+
+Vector3 RendererSceneRender::environment_get_ddgi_probe_spacing(RID p_env) const {
+	return environment_storage.environment_get_ddgi_probe_spacing(p_env);
+}
+
+int RendererSceneRender::environment_get_ddgi_rays_per_probe(RID p_env) const {
+	return environment_storage.environment_get_ddgi_rays_per_probe(p_env);
+}
+
+float RendererSceneRender::environment_get_ddgi_max_ray_distance(RID p_env) const {
+	return environment_storage.environment_get_ddgi_max_ray_distance(p_env);
+}
+
+float RendererSceneRender::environment_get_ddgi_hysteresis(RID p_env) const {
+	return environment_storage.environment_get_ddgi_hysteresis(p_env);
+}
+
+float RendererSceneRender::environment_get_ddgi_normal_bias(RID p_env) const {
+	return environment_storage.environment_get_ddgi_normal_bias(p_env);
+}
+
+float RendererSceneRender::environment_get_ddgi_view_bias(RID p_env) const {
+	return environment_storage.environment_get_ddgi_view_bias(p_env);
+}
+
+float RendererSceneRender::environment_get_ddgi_energy(RID p_env) const {
+	return environment_storage.environment_get_ddgi_energy(p_env);
+}
+
+bool RendererSceneRender::environment_get_ddgi_read_sky(RID p_env) const {
+	return environment_storage.environment_get_ddgi_read_sky(p_env);
+}
+
 // Adjustments
 
 // Raytracing

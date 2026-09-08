@@ -6927,6 +6927,32 @@ void RenderingDevice::compute_list_set_push_constant(ComputeListID p_list, const
 #endif
 }
 
+void RenderingDevice::compute_list_add_buffer_dependency(ComputeListID p_list, RID p_buffer, bool p_writable) {
+	ERR_RENDER_THREAD_GUARD();
+
+	ERR_FAIL_COND(p_list != ID_TYPE_COMPUTE_LIST);
+	ERR_FAIL_COND(!compute_list.active);
+
+	Buffer *buffer = _get_buffer_from_owner(p_buffer);
+	ERR_FAIL_NULL_MSG(buffer, "Buffer argument is not a valid buffer of any type.");
+
+	// Promote the buffer to mutable so it has a draw_tracker. First-time
+	// promotion also triggers a global synchronization point so any writes
+	// that happened before the buffer was made mutable are flushed.
+	if (_buffer_make_mutable(buffer, p_buffer)) {
+		draw_graph.add_synchronization();
+	}
+
+	if (buffer->draw_tracker != nullptr) {
+		RDG::ResourceUsage usage = p_writable
+				? RDG::RESOURCE_USAGE_STORAGE_BUFFER_READ_WRITE
+				: RDG::RESOURCE_USAGE_STORAGE_BUFFER_READ;
+		draw_graph.add_compute_list_usage(buffer->draw_tracker, usage);
+	}
+
+	_check_transfer_worker_buffer(buffer);
+}
+
 void RenderingDevice::compute_list_dispatch(ComputeListID p_list, uint32_t p_x_groups, uint32_t p_y_groups, uint32_t p_z_groups) {
 	ERR_RENDER_THREAD_GUARD();
 

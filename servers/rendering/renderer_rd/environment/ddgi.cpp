@@ -280,6 +280,36 @@ bool _is_gi_output_compatible(const Ref<RenderSceneBuffersRD> &p_render_buffers,
 			(texture_format.usage_bits & required_usage) == required_usage;
 }
 
+bool _is_ddgi_gbuffer_compatible(const Ref<RenderSceneBuffersRD> &p_render_buffers, const StringName &p_name) {
+	if (!p_render_buffers->has_texture(RB_SCOPE_DDGI, p_name)) {
+		return false;
+	}
+	if (!p_render_buffers->get_texture(RB_SCOPE_DDGI, p_name).is_valid()) {
+		return false;
+	}
+
+	const RD::TextureFormat texture_format = p_render_buffers->get_texture_format(RB_SCOPE_DDGI, p_name);
+	const Size2i internal_size = p_render_buffers->get_internal_size();
+	const uint32_t required_usage =
+			RD::TEXTURE_USAGE_SAMPLING_BIT |
+			RD::TEXTURE_USAGE_STORAGE_BIT |
+			RD::TEXTURE_USAGE_CAN_COPY_TO_BIT;
+
+	const bool format_compatible =
+			(p_name == RB_TEX_GBUFFER_A && texture_format.format == RD::DATA_FORMAT_R8G8B8A8_UNORM) ||
+			((p_name == RB_TEX_GBUFFER_B || p_name == RB_TEX_GBUFFER_C || p_name == RB_TEX_GBUFFER_D) &&
+					texture_format.format == RD::DATA_FORMAT_R32G32B32A32_SFLOAT);
+	return format_compatible &&
+			texture_format.texture_type == RD::TEXTURE_TYPE_2D &&
+			texture_format.width == uint32_t(internal_size.x) &&
+			texture_format.height == uint32_t(internal_size.y) &&
+			texture_format.depth == 1 &&
+			texture_format.array_layers == 1 &&
+			texture_format.mipmaps == 1 &&
+			texture_format.samples == RD::TEXTURE_SAMPLES_1 &&
+			(texture_format.usage_bits & required_usage) == required_usage;
+}
+
 } // namespace
 
 bool DDGISettings::is_valid() const {
@@ -581,6 +611,8 @@ bool DDGI::prepare_frame(const Ref<RenderSceneBuffersRD> &p_render_buffers, cons
 		if (p_render_buffers->has_custom_data(RB_SCOPE_DDGI)) {
 			p_render_buffers->set_custom_data(RB_SCOPE_DDGI, Ref<RenderBufferCustomDataRD>());
 		}
+		// Discard DDGI-owned G-buffers so later frames cannot reuse partial data.
+		p_render_buffers->clear_context(RB_SCOPE_DDGI);
 		// A fallback GI backend runs immediately after this pre-cull hook. Do
 		// not leave DDGI-sized outputs for it to mistake for valid history.
 		p_render_buffers->clear_context(RB_SCOPE_GI);
@@ -631,7 +663,12 @@ bool DDGI::prepare_frame(const Ref<RenderSceneBuffersRD> &p_render_buffers, cons
 }
 
 bool DDGI::clear_state(const Ref<RenderSceneBuffersRD> &p_render_buffers) {
-	if (p_render_buffers.is_null() || !p_render_buffers->has_custom_data(RB_SCOPE_DDGI)) {
+	if (p_render_buffers.is_null()) {
+		return false;
+	}
+
+	p_render_buffers->clear_context(RB_SCOPE_DDGI);
+	if (!p_render_buffers->has_custom_data(RB_SCOPE_DDGI)) {
 		return false;
 	}
 
@@ -640,6 +677,68 @@ bool DDGI::clear_state(const Ref<RenderSceneBuffersRD> &p_render_buffers) {
 		state->free_data();
 	}
 	p_render_buffers->set_custom_data(RB_SCOPE_DDGI, Ref<RenderBufferCustomDataRD>());
+	return true;
+}
+
+bool DDGI::ensure_ddgi_gbuffer_textures(const Ref<RenderSceneBuffersRD> &p_render_buffers, bool p_clear_existing) {
+	ERR_FAIL_COND_V(p_render_buffers.is_null(), false);
+	ERR_FAIL_COND_V(p_render_buffers->get_internal_size().x <= 0 || p_render_buffers->get_internal_size().y <= 0, false);
+	ERR_FAIL_COND_V(p_render_buffers->get_view_count() != 1, false);
+
+	const uint32_t usage_bits = RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_STORAGE_BIT | RD::TEXTURE_USAGE_CAN_COPY_TO_BIT;
+
+	if (p_clear_existing ||
+			!_is_ddgi_gbuffer_compatible(p_render_buffers, RB_TEX_GBUFFER_A) ||
+			!_is_ddgi_gbuffer_compatible(p_render_buffers, RB_TEX_GBUFFER_B) ||
+			!_is_ddgi_gbuffer_compatible(p_render_buffers, RB_TEX_GBUFFER_C) ||
+			!_is_ddgi_gbuffer_compatible(p_render_buffers, RB_TEX_GBUFFER_D)) {
+		p_render_buffers->clear_context(RB_SCOPE_DDGI);
+	}
+
+	if (!p_render_buffers->has_texture(RB_SCOPE_DDGI, RB_TEX_GBUFFER_A)) {
+		p_render_buffers->create_texture(RB_SCOPE_DDGI, RB_TEX_GBUFFER_A, RD::DATA_FORMAT_R8G8B8A8_UNORM, usage_bits, RD::TEXTURE_SAMPLES_1);
+	}
+	if (!p_render_buffers->has_texture(RB_SCOPE_DDGI, RB_TEX_GBUFFER_B)) {
+		p_render_buffers->create_texture(RB_SCOPE_DDGI, RB_TEX_GBUFFER_B, RD::DATA_FORMAT_R32G32B32A32_SFLOAT, usage_bits, RD::TEXTURE_SAMPLES_1);
+	}
+	if (!p_render_buffers->has_texture(RB_SCOPE_DDGI, RB_TEX_GBUFFER_C)) {
+		p_render_buffers->create_texture(RB_SCOPE_DDGI, RB_TEX_GBUFFER_C, RD::DATA_FORMAT_R32G32B32A32_SFLOAT, usage_bits, RD::TEXTURE_SAMPLES_1);
+	}
+	if (!p_render_buffers->has_texture(RB_SCOPE_DDGI, RB_TEX_GBUFFER_D)) {
+		p_render_buffers->create_texture(RB_SCOPE_DDGI, RB_TEX_GBUFFER_D, RD::DATA_FORMAT_R32G32B32A32_SFLOAT, usage_bits, RD::TEXTURE_SAMPLES_1);
+	}
+
+	if (!_is_ddgi_gbuffer_compatible(p_render_buffers, RB_TEX_GBUFFER_A) ||
+			!_is_ddgi_gbuffer_compatible(p_render_buffers, RB_TEX_GBUFFER_B) ||
+			!_is_ddgi_gbuffer_compatible(p_render_buffers, RB_TEX_GBUFFER_C) ||
+			!_is_ddgi_gbuffer_compatible(p_render_buffers, RB_TEX_GBUFFER_D)) {
+		p_render_buffers->clear_context(RB_SCOPE_DDGI);
+		return false;
+	}
+
+	return true;
+}
+
+bool DDGI::clear_ddgi_gbuffer_textures(const Ref<RenderSceneBuffersRD> &p_render_buffers) {
+	if (p_render_buffers.is_null()) {
+		return false;
+	}
+
+	if (!_is_ddgi_gbuffer_compatible(p_render_buffers, RB_TEX_GBUFFER_A) ||
+			!_is_ddgi_gbuffer_compatible(p_render_buffers, RB_TEX_GBUFFER_B) ||
+			!_is_ddgi_gbuffer_compatible(p_render_buffers, RB_TEX_GBUFFER_C) ||
+			!_is_ddgi_gbuffer_compatible(p_render_buffers, RB_TEX_GBUFFER_D)) {
+		p_render_buffers->clear_context(RB_SCOPE_DDGI);
+		return true;
+	}
+
+	if (RD::get_singleton()->texture_clear(p_render_buffers->get_texture(RB_SCOPE_DDGI, RB_TEX_GBUFFER_A), Color(0, 0, 0, 0), 0, 1, 0, 1) != OK ||
+			RD::get_singleton()->texture_clear(p_render_buffers->get_texture(RB_SCOPE_DDGI, RB_TEX_GBUFFER_B), Color(0, 0, 0, 0), 0, 1, 0, 1) != OK ||
+			RD::get_singleton()->texture_clear(p_render_buffers->get_texture(RB_SCOPE_DDGI, RB_TEX_GBUFFER_C), Color(0, 0, 0, 0), 0, 1, 0, 1) != OK ||
+			RD::get_singleton()->texture_clear(p_render_buffers->get_texture(RB_SCOPE_DDGI, RB_TEX_GBUFFER_D), Color(0, 0, 0, 0), 0, 1, 0, 1) != OK) {
+		p_render_buffers->clear_context(RB_SCOPE_DDGI);
+		return false;
+	}
 	return true;
 }
 

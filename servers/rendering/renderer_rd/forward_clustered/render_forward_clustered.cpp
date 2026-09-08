@@ -31,7 +31,9 @@
 #include "render_forward_clustered.h"
 
 #include "core/config/project_settings.h"
+#include "servers/rendering/renderer_rd/environment/ddgi.h"
 #include "servers/rendering/renderer_rd/environment/fog.h"
+#include "servers/rendering/renderer_rd/forward_clustered/scene_shader_raytracing.h"
 #include "servers/rendering/renderer_rd/framebuffer_cache_rd.h"
 #include "servers/rendering/renderer_rd/storage_rd/light_storage.h"
 #include "servers/rendering/renderer_rd/storage_rd/mesh_storage.h"
@@ -124,7 +126,7 @@ void RenderForwardClustered::RenderBufferDataForwardClustered::free_data() {
 		render_buffers->clear_context(RB_SCOPE_SSAO);
 		render_buffers->clear_context(RB_SCOPE_SSR);
 
-		// Path-tracing subclass frees its per-viewport RT/DLSS-RR state (no-op otherwise).
+		// Free shared per-viewport RT state and any DLSS-RR guide textures.
 		if (RenderForwardClustered *rfc = RenderForwardClustered::get_singleton()) {
 			rfc->_free_rt_viewport_state(render_buffers);
 		}
@@ -704,7 +706,7 @@ void RenderForwardClustered::_render_list_with_draw_list(RenderListParameters *p
 	RD::get_singleton()->draw_list_end();
 }
 
-uint32_t RenderForwardClustered::_setup_environment(const RenderDataRD *p_render_data, bool p_no_fog, const Size2i &p_screen_size, const Size2 &p_viewport_size, const Color &p_default_bg_color, bool p_opaque_render_buffers, bool p_apply_alpha_multiplier, bool p_pancake_shadows) {
+uint32_t RenderForwardClustered::_setup_environment(const RenderDataRD *p_render_data, bool p_no_fog, const Size2i &p_screen_size, const Size2 &p_viewport_size, const Color &p_default_bg_color, bool p_opaque_render_buffers, bool p_apply_alpha_multiplier, bool p_pancake_shadows, bool p_disable_ssil) {
 	RendererRD::LightStorage *light_storage = RendererRD::LightStorage::get_singleton();
 
 	Ref<RenderSceneBuffersRD> rd = p_render_data->render_buffers;
@@ -774,7 +776,7 @@ uint32_t RenderForwardClustered::_setup_environment(const RenderDataRD *p_render
 		uint32_t ss_flags = 0;
 		if (p_opaque_render_buffers) {
 			ss_flags |= environment_get_ssao_enabled(p_render_data->environment) ? (1 << 0) : 0;
-			ss_flags |= environment_get_ssil_enabled(p_render_data->environment) ? (1 << 1) : 0;
+			ss_flags |= !p_disable_ssil && environment_get_ssil_enabled(p_render_data->environment) ? (1 << 1) : 0;
 			ss_flags |= environment_get_ssr_enabled(p_render_data->environment) ? (1 << 2) : 0;
 
 			if (rd.is_valid()) {
@@ -934,7 +936,7 @@ _FORCE_INLINE_ static uint32_t _indices_to_primitives(RSE::PrimitiveType p_primi
 	static const uint32_t subtractor[RSE::PRIMITIVE_MAX] = { 0, 0, 1, 0, 2 };
 	return (p_indices - subtractor[p_primitive]) / divisor[p_primitive];
 }
-void RenderForwardClustered::_fill_render_list(RenderListType p_render_list, const RenderDataRD *p_render_data, PassMode p_pass_mode, bool p_using_sdfgi, bool p_using_opaque_gi, bool p_using_motion_pass, bool p_append, bool p_alpha_only) {
+void RenderForwardClustered::_fill_render_list(RenderListType p_render_list, const RenderDataRD *p_render_data, PassMode p_pass_mode, bool p_using_sdfgi, bool p_using_opaque_gi, bool p_using_motion_pass, bool p_append, bool p_alpha_only, bool p_using_ddgi) {
 	RendererRD::MeshStorage *mesh_storage = RendererRD::MeshStorage::get_singleton();
 
 	if (p_render_list == RENDER_LIST_OPAQUE) {
@@ -1085,7 +1087,7 @@ void RenderForwardClustered::_fill_render_list(RenderListType p_render_list, con
 					flags |= INSTANCE_DATA_FLAG_USE_GI_BUFFERS;
 				}
 
-				if (inst->voxel_gi_instances[0].is_valid()) {
+				if (!p_using_ddgi && inst->voxel_gi_instances[0].is_valid()) {
 					uint32_t probe0_index = 0xFFFF;
 					uint32_t probe1_index = 0xFFFF;
 
@@ -1765,9 +1767,57 @@ void RenderForwardClustered::_process_sss(Ref<RenderSceneBuffersRD> p_render_buf
 	}
 }
 
+bool RenderForwardClustered::_ensure_rt_scene(BitField<RTSceneConsumer> p_consumers) {
+	if (p_consumers.is_empty()) {
+		return false;
+	}
+
+	RD *rd = RD::get_singleton();
+	if (!rd->has_feature(RD::SUPPORTS_RAYTRACING_PIPELINE)) {
+		WARN_PRINT_ONCE("Raytracing pipelines are not supported on this device.");
+		return false;
+	}
+	if (p_consumers.has_flag(RT_SCENE_CONSUMER_DDGI) && !rd->has_feature(RD::SUPPORTS_RAY_QUERY)) {
+		WARN_PRINT_ONCE("DDGI ray queries are not supported on this device.");
+		return false;
+	}
+
+	if (raytracing) {
+		return raytracing->get_shader() != nullptr;
+	}
+
+	raytracing = memnew(RenderRaytracing);
+	raytracing->initialize(this);
+	raytracing->shader = SceneShaderRaytracing::get_singleton();
+	String rt_defines;
+	rt_defines += "\n#define RT 1\n";
+	rt_defines += "\n#define MAX_ROUGHNESS_LOD " + itos(get_roughness_layers() - 1) + ".0\n";
+	if (is_using_radiance_octmap_array()) {
+		rt_defines += "\n#define USE_RADIANCE_OCTMAP_ARRAY \n";
+	}
+	raytracing->shader->init(rt_defines);
+
+	return true;
+}
+
+RTSceneSnapshot RenderForwardClustered::_prepare_rt_scene(const RenderDataRD *p_render_data, BitField<RTSceneConsumer> p_consumers, uint32_t p_rt_flags) {
+	if (!_ensure_rt_scene(p_consumers)) {
+		return RTSceneSnapshot();
+	}
+	return raytracing->build_scene(p_render_data, p_consumers, p_rt_flags);
+}
+
+RTViewportState *RenderForwardClustered::_get_rt_viewport_state(const RTSceneSnapshot &p_snapshot) const {
+	return raytracing ? raytracing->get_viewport_state(p_snapshot) : nullptr;
+}
+
 void RenderForwardClustered::_free_rt_viewport_state(RenderSceneBuffersRD *p_render_buffers) {
-	// No raytracing state in the base raster renderer.
-	// RenderForwardClusteredPT overrides this to release its DLSS RR / RT viewport state.
+	ERR_FAIL_NULL(p_render_buffers);
+
+	p_render_buffers->clear_context(RB_SCOPE_DLSS_RR);
+	if (raytracing) {
+		raytracing->free_viewport_state(p_render_buffers);
+	}
 }
 
 RenderForwardClustered::Scale3DMode RenderForwardClustered::_resolve_scale_3d_mode(Ref<RenderSceneBuffersRD> p_render_buffers) const {
@@ -1952,6 +2002,47 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 	}
 	bool is_reflection_probe = p_render_data->reflection_probe.is_valid();
 
+	Ref<RendererRD::DDGIState> ddgi_state;
+	if (!is_reflection_probe &&
+			ddgi &&
+			raytracing &&
+			rb_data.is_valid() &&
+			p_render_data->environment.is_valid() &&
+			environment_get_ddgi_enabled(p_render_data->environment) &&
+			!environment_get_pathtracing_enabled(p_render_data->environment) &&
+			rb->get_view_count() == 1 &&
+			p_render_data->scene_data->view_count == 1 &&
+			rb->has_custom_data(RB_SCOPE_DDGI)) {
+		ddgi_state = rb->get_custom_data(RB_SCOPE_DDGI);
+	}
+	const bool using_ddgi = ddgi_state.is_valid() &&
+			ddgi_state->environment == p_render_data->environment &&
+			ddgi_state->is_prepared_for_scene_pass(get_scene_pass());
+	bool ddgi_frame_ready = using_ddgi;
+
+	if (using_ddgi && rb->has_texture(RB_SCOPE_SSIL, RB_FINAL)) {
+		// SSIL is mutually exclusive with DDGI. Remove stale screen-space
+		// indirect-lighting textures so they cannot survive a backend switch.
+		rb->clear_context(RB_SCOPE_SSIL);
+	}
+	if (using_ddgi && ddgi_state->history_reset) {
+		// A stale last-frame buffer would be consumed when SSIL is enabled again.
+		// SSR recreates this context below when it is active in the current frame.
+		rb->clear_context(RB_SCOPE_SSLF);
+	}
+
+	auto fail_ddgi_frame = [&]() {
+		if (ddgi) {
+			ddgi->clear_gi_outputs(rb);
+		}
+		if (ddgi_state.is_valid()) {
+			// A future probe core may not have applied this frame's scroll or
+			// semantic changes, so the next successful update must start clean.
+			ddgi_state->history_reset = true;
+		}
+		ddgi_frame_ready = false;
+	};
+
 	static const int texture_multisamples[RSE::VIEWPORT_MSAA_MAX] = { 1, 2, 4, 8 };
 
 	//first of all, make a new render pass
@@ -1968,9 +2059,11 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 	_update_sdfgi(p_render_data);
 
 	// assign render indices to voxel_gi_instances
-	for (uint32_t i = 0; i < (uint32_t)p_render_data->voxel_gi_instances->size(); i++) {
-		RID voxel_gi_instance = (*p_render_data->voxel_gi_instances)[i];
-		gi.voxel_gi_instance_set_render_index(voxel_gi_instance, i);
+	if (!using_ddgi) {
+		for (uint32_t i = 0; i < (uint32_t)p_render_data->voxel_gi_instances->size(); i++) {
+			RID voxel_gi_instance = (*p_render_data->voxel_gi_instances)[i];
+			gi.voxel_gi_instance_set_render_index(voxel_gi_instance, i);
+		}
 	}
 
 	// obtain cluster builder
@@ -1985,7 +2078,7 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 
 		p_render_data->voxel_gi_count = 0;
 
-		if (rb->has_custom_data(RB_SCOPE_SDFGI)) {
+		if (!using_ddgi && rb->has_custom_data(RB_SCOPE_SDFGI)) {
 			Ref<RendererRD::GI::SDFGI> sdfgi = rb->get_custom_data(RB_SCOPE_SDFGI);
 			if (sdfgi.is_valid()) {
 				sdfgi->update_cascades();
@@ -1994,7 +2087,9 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 			}
 		}
 
-		gi.setup_voxel_gi_instances(p_render_data, p_render_data->render_buffers, p_render_data->scene_data->cam_transform, *p_render_data->voxel_gi_instances, p_render_data->voxel_gi_count);
+		if (!using_ddgi) {
+			gi.setup_voxel_gi_instances(p_render_data, p_render_data->render_buffers, p_render_data->scene_data->cam_transform, *p_render_data->voxel_gi_instances, p_render_data->voxel_gi_count);
+		}
 	} else {
 		ERR_PRINT("No render buffer nor reflection atlas, bug"); // Should never happen!
 		current_cluster_builder = nullptr;
@@ -2051,7 +2146,7 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 	bool using_sdfgi = false;
 	bool using_voxelgi = false;
 	bool reverse_cull = p_render_data->scene_data->cam_transform.basis.determinant() < 0;
-	bool using_ssil = !is_reflection_probe && p_render_data->environment.is_valid() && environment_get_ssil_enabled(p_render_data->environment);
+	bool using_ssil = !using_ddgi && !is_reflection_probe && p_render_data->environment.is_valid() && environment_get_ssil_enabled(p_render_data->environment);
 	bool using_motion_pass = rb_data.is_valid() && using_upscaling;
 
 	if (is_reflection_probe) {
@@ -2083,12 +2178,12 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 			global_pipeline_data_required.use_motion_vectors = true;
 		}
 
-		if (p_render_data->voxel_gi_instances->size() > 0) {
+		if (!using_ddgi && p_render_data->voxel_gi_instances->size() > 0) {
 			using_voxelgi = true;
 		}
 
 		if (p_render_data->environment.is_valid()) {
-			if (environment_get_sdfgi_enabled(p_render_data->environment) && get_debug_draw_mode() != RSE::VIEWPORT_DEBUG_DRAW_UNSHADED) {
+			if (!using_ddgi && environment_get_sdfgi_enabled(p_render_data->environment) && rb->has_custom_data(RB_SCOPE_SDFGI) && get_debug_draw_mode() != RSE::VIEWPORT_DEBUG_DRAW_UNSHADED) {
 				using_sdfgi = true;
 			}
 			if (environment_get_ssr_enabled(p_render_data->environment)) {
@@ -2119,13 +2214,17 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 	RD::get_singleton()->draw_command_begin_label("Render Setup");
 
 	_setup_lightmaps(p_render_data, *p_render_data->lightmaps, p_render_data->scene_data->cam_transform);
-	_setup_voxelgis(*p_render_data->voxel_gi_instances);
+	if (using_ddgi) {
+		scene_state.voxelgis_used = 0;
+	} else {
+		_setup_voxelgis(*p_render_data->voxel_gi_instances);
+	}
 	uint32_t depth_prepass_uniform_buffer_index = _setup_environment(p_render_data, is_reflection_probe, screen_size, screen_size, p_default_bg_color, false);
 
 	// May have changed due to the above (light buffer enlarged, as an example).
 	_update_render_base_uniform_set();
 
-	_fill_render_list(RENDER_LIST_OPAQUE, p_render_data, PASS_MODE_COLOR, using_sdfgi, using_sdfgi || using_voxelgi, using_motion_pass);
+	_fill_render_list(RENDER_LIST_OPAQUE, p_render_data, PASS_MODE_COLOR, using_sdfgi, using_sdfgi || using_voxelgi || using_ddgi, using_motion_pass, false, false, using_ddgi);
 	render_list[RENDER_LIST_OPAQUE].sort_by_key();
 	render_list[RENDER_LIST_MOTION].sort_by_key();
 	render_list[RENDER_LIST_ALPHA].sort_by_reverse_depth_and_priority();
@@ -2137,11 +2236,21 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 
 	RD::get_singleton()->draw_command_end_label();
 
+	RTSceneSnapshot ddgi_snapshot;
+	if (using_ddgi) {
+		ddgi_snapshot = _prepare_rt_scene(p_render_data, RT_SCENE_CONSUMER_DDGI, 0);
+		if (!ddgi_snapshot.is_valid() || !ddgi_snapshot.consumers.has_flag(RT_SCENE_CONSUMER_DDGI)) {
+			WARN_PRINT_ONCE("DDGI could not acquire a valid RT scene snapshot; clearing its diagnostic output for this frame.");
+			fail_ddgi_frame();
+		}
+	}
+
 	if (!is_reflection_probe) {
 		if (using_voxelgi) {
 			depth_pass_mode = PASS_MODE_DEPTH_NORMAL_ROUGHNESS_VOXEL_GI;
 		} else if (p_render_data->environment.is_valid()) {
-			if (using_ssr ||
+			if (using_ddgi ||
+					using_ssr ||
 					using_sdfgi ||
 					environment_get_ssao_enabled(p_render_data->environment) ||
 					using_ssil ||
@@ -2276,7 +2385,7 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 		}
 
 		// setup sky if used for ambient, reflections, or background
-		if (draw_sky || draw_sky_fog_only || (reflection_source == RSE::ENV_REFLECTION_SOURCE_BG && bg_mode == RSE::ENV_BG_SKY) || reflection_source == RSE::ENV_REFLECTION_SOURCE_SKY || environment_get_ambient_source(p_render_data->environment) == RSE::ENV_AMBIENT_SOURCE_SKY) {
+		if (draw_sky || draw_sky_fog_only || (reflection_source == RSE::ENV_REFLECTION_SOURCE_BG && bg_mode == RSE::ENV_BG_SKY) || reflection_source == RSE::ENV_REFLECTION_SOURCE_SKY || environment_get_ambient_source(p_render_data->environment) == RSE::ENV_AMBIENT_SOURCE_SKY || (using_ddgi && ddgi_state->settings.read_sky)) {
 			RENDER_TIMESTAMP("Setup Sky");
 			RD::get_singleton()->draw_command_begin_label("Setup Sky");
 
@@ -2309,6 +2418,11 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 		clear_color = p_default_bg_color.srgb_to_linear();
 	}
 
+	if (ddgi_frame_ready && !ddgi->update_probes(ddgi_state, ddgi_snapshot, *raytracing, p_render_data, radiance_texture)) {
+		WARN_PRINT_ONCE("DDGI probe update preparation failed; clearing its diagnostic output for this frame.");
+		fail_ddgi_frame();
+	}
+
 	// After this point clear_color has linear encoding.
 
 	RSE::ViewportMSAA msaa = rb->get_msaa_3d();
@@ -2324,7 +2438,7 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 
 	bool debug_voxelgis = get_debug_draw_mode() == RSE::VIEWPORT_DEBUG_DRAW_VOXEL_GI_ALBEDO || get_debug_draw_mode() == RSE::VIEWPORT_DEBUG_DRAW_VOXEL_GI_LIGHTING || get_debug_draw_mode() == RSE::VIEWPORT_DEBUG_DRAW_VOXEL_GI_EMISSION;
 	bool debug_sdfgi_probes = get_debug_draw_mode() == RSE::VIEWPORT_DEBUG_DRAW_SDFGI_PROBES;
-	bool force_depth_pre_pass = scene_state.used_opaque_stencil;
+	bool force_depth_pre_pass = scene_state.used_opaque_stencil || using_ddgi;
 	bool depth_pre_pass = (force_depth_pre_pass || bool(GLOBAL_GET_CACHED(bool, "rendering/driver/depth_prepass/enable"))) && depth_framebuffer.is_valid();
 
 	SceneShaderForwardClustered::ShaderSpecialization base_specialization = scene_shader.default_specialization;
@@ -2351,7 +2465,7 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 
 		RID rp_uniform_set = _setup_render_pass_uniform_set(RENDER_LIST_OPAQUE, nullptr, RID(), samplers, depth_prepass_uniform_buffer_index);
 
-		bool finish_depth = using_ssao || using_ssil || using_sdfgi || using_voxelgi || ce_pre_opaque_resolved_depth || ce_post_opaque_resolved_depth;
+		bool finish_depth = using_ssao || using_ssil || using_sdfgi || using_voxelgi || using_ddgi || ce_pre_opaque_resolved_depth || ce_post_opaque_resolved_depth;
 		RenderListParameters render_list_params(render_list[RENDER_LIST_OPAQUE].elements.ptr(), render_list[RENDER_LIST_OPAQUE].element_info.ptr(), render_list[RENDER_LIST_OPAQUE].elements.size(), reverse_cull, depth_pass_mode, 0, rb_data.is_null(), p_render_data->directional_light_soft_shadows, rp_uniform_set, get_debug_draw_mode() == RSE::VIEWPORT_DEBUG_DRAW_WIREFRAME, Vector2(), p_render_data->scene_data->lod_distance_multiplier, p_render_data->scene_data->screen_mesh_lod_threshold, p_render_data->scene_data->view_count, 0, base_specialization);
 		_render_list_with_draw_list(&render_list_params, depth_framebuffer, RD::DrawFlags(needs_pre_resolve ? RD::DRAW_DEFAULT_ALL : RD::DRAW_CLEAR_ALL), depth_pass_clear, 0.0f, 0u, p_render_data->render_region);
 
@@ -2396,6 +2510,18 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 	}
 	_pre_opaque_render(p_render_data, using_ssao, using_ssil, using_ssr, using_sdfgi || using_voxelgi, normal_roughness_views, rb_data.is_valid() && rb_data->has_voxelgi() ? rb_data->get_voxelgi() : RID());
 
+	if (ddgi_frame_ready) {
+		RENDER_TIMESTAMP("Resolve DDGI");
+		const RID resolved_depth = rb->get_depth_texture(0);
+		const RID resolved_normal_roughness = rb_data->get_normal_roughness(0);
+		if (!depth_pre_pass || !ddgi->resolve(ddgi_state, rb, resolved_depth, resolved_normal_roughness)) {
+			WARN_PRINT_ONCE("DDGI diagnostic resolve failed; clearing its output for this frame.");
+			fail_ddgi_frame();
+		} else {
+			ddgi_state->commit_frame(ddgi_snapshot.generation);
+		}
+	}
+
 	if (current_cluster_builder) {
 		base_specialization.cluster_has_area_light = current_cluster_builder->get_cluster_count_by_type(ClusterBuilderRD::ELEMENT_TYPE_AREA_LIGHT) != 0;
 	}
@@ -2410,7 +2536,7 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 	// Shadow pass can change the base uniform set samplers.
 	_update_render_base_uniform_set();
 
-	uint32_t opaque_pass_uniform_buffer_index = _setup_environment(p_render_data, is_reflection_probe, screen_size, screen_size, p_default_bg_color, true, using_motion_pass);
+	uint32_t opaque_pass_uniform_buffer_index = _setup_environment(p_render_data, is_reflection_probe, screen_size, screen_size, p_default_bg_color, true, using_motion_pass, false, using_ddgi);
 
 	RID rp_uniform_set = _setup_render_pass_uniform_set(RENDER_LIST_OPAQUE, p_render_data, radiance_texture, samplers, opaque_pass_uniform_buffer_index, true);
 
@@ -4157,6 +4283,70 @@ void RenderForwardClustered::sub_surface_scattering_set_scale(float p_scale, flo
 
 RenderForwardClustered *RenderForwardClustered::singleton = nullptr;
 
+bool RenderForwardClustered::ddgi_prepare_frame(const Ref<RenderSceneBuffers> &p_render_buffers, RID p_environment, RID p_scenario, const Vector3 &p_camera_position, AABB &r_bounds) {
+	r_bounds = AABB();
+
+	Ref<RenderSceneBuffersRD> rb = p_render_buffers;
+	ERR_FAIL_COND_V(rb.is_null(), false);
+
+	auto disable_ddgi = [&]() {
+		bool state_removed = false;
+		if (ddgi) {
+			state_removed = ddgi->clear_state(rb);
+		} else if (rb->has_custom_data(RB_SCOPE_DDGI)) {
+			Ref<RendererRD::DDGIState> state = rb->get_custom_data(RB_SCOPE_DDGI);
+			if (state.is_valid()) {
+				state->free_data();
+			}
+			rb->set_custom_data(RB_SCOPE_DDGI, Ref<RenderBufferCustomDataRD>());
+			state_removed = true;
+		}
+
+		if (state_removed) {
+			// DDGI resolve will share these named textures with the other GI backends.
+			rb->clear_context(RB_SCOPE_GI);
+		}
+		return false;
+	};
+
+	// RendererSceneCull skips this prepare hook for ReflectionProbes, and the
+	// mono check below explicitly rejects XR/multiview for the MVP.
+	if (!p_environment.is_valid() ||
+			!p_scenario.is_valid() ||
+			!environment_get_ddgi_enabled(p_environment) ||
+			environment_get_pathtracing_enabled(p_environment) ||
+			rb->get_view_count() != 1) {
+		return disable_ddgi();
+	}
+
+	RD *rd = RD::get_singleton();
+	if (!rd->has_feature(RD::SUPPORTS_RAYTRACING_PIPELINE) ||
+			!rd->has_feature(RD::SUPPORTS_RAY_QUERY) ||
+			!_ensure_rt_scene(RT_SCENE_CONSUMER_DDGI)) {
+		return disable_ddgi();
+	}
+
+	RendererRD::DDGISettings settings;
+	settings.probe_count = environment_get_ddgi_probe_count(p_environment);
+	settings.probe_spacing = environment_get_ddgi_probe_spacing(p_environment);
+	settings.rays_per_probe = uint32_t(environment_get_ddgi_rays_per_probe(p_environment));
+	settings.max_ray_distance = environment_get_ddgi_max_ray_distance(p_environment);
+	settings.hysteresis = environment_get_ddgi_hysteresis(p_environment);
+	settings.normal_bias = environment_get_ddgi_normal_bias(p_environment);
+	settings.view_bias = environment_get_ddgi_view_bias(p_environment);
+	settings.energy = environment_get_ddgi_energy(p_environment);
+	settings.read_sky = environment_get_ddgi_read_sky(p_environment);
+
+	if (!ddgi) {
+		ddgi = memnew(RendererRD::DDGI);
+	}
+	if (!ddgi->prepare_frame(rb, settings, p_environment, p_scenario, p_camera_position, get_scene_pass(), r_bounds)) {
+		return disable_ddgi();
+	}
+
+	return true;
+}
+
 void RenderForwardClustered::sdfgi_update(const Ref<RenderSceneBuffers> &p_render_buffers, RID p_environment, const Vector3 &p_world_position) {
 	Ref<RenderSceneBuffersRD> rb = p_render_buffers;
 	ERR_FAIL_COND(rb.is_null());
@@ -4165,8 +4355,16 @@ void RenderForwardClustered::sdfgi_update(const Ref<RenderSceneBuffers> &p_rende
 		sdfgi = rb->get_custom_data(RB_SCOPE_SDFGI);
 	}
 
-	// SDFGI is incompatible with raytracing -- disable entirely when RT is active.
-	bool rt_active = p_environment.is_valid() && environment_get_pathtracing_enabled(p_environment);
+	bool ddgi_active = false;
+	if (rb->has_custom_data(RB_SCOPE_DDGI)) {
+		Ref<RendererRD::DDGIState> ddgi_state = rb->get_custom_data(RB_SCOPE_DDGI);
+		ddgi_active = ddgi_state.is_valid() &&
+				ddgi_state->environment == p_environment &&
+				ddgi_state->is_prepared_for_scene_pass(get_scene_pass());
+	}
+
+	// SDFGI is incompatible with the active RT GI/rendering backend.
+	bool rt_active = ddgi_active || (p_environment.is_valid() && environment_get_pathtracing_enabled(p_environment));
 	bool needs_sdfgi = !rt_active && p_environment.is_valid() && environment_get_sdfgi_enabled(p_environment);
 	bool needs_reset = sdfgi.is_valid() ? sdfgi->version != gi.sdfgi_current_version : false;
 
@@ -5452,10 +5650,22 @@ RenderForwardClustered::RenderForwardClustered() {
 	mfx_temporal_effect = memnew(RendererRD::MFXTemporalEffect);
 #endif
 
-	// Raytracing will be initialized lazily when rt_set_enabled(true) is called
+	// The shared RT scene service is initialized lazily by its first consumer.
 }
 
 RenderForwardClustered::~RenderForwardClustered() {
+	// DDGIState objects are owned by render buffers and never retain RT snapshots.
+	// Destroy the facade before the shared RT scene service it may use later.
+	if (ddgi) {
+		memdelete(ddgi);
+		ddgi = nullptr;
+	}
+
+	if (raytracing) {
+		memdelete(raytracing);
+		raytracing = nullptr;
+	}
+
 	if (ss_effects != nullptr) {
 		memdelete(ss_effects);
 		ss_effects = nullptr;

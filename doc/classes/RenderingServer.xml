@@ -1353,6 +1353,24 @@
 				Sets the maximum layer to use if using Canvas background mode.
 			</description>
 		</method>
+		<method name="environment_set_ddgi">
+			<return type="void" />
+			<param index="0" name="env" type="RID" />
+			<param index="1" name="enable" type="bool" />
+			<param index="2" name="probe_count" type="Vector3i" />
+			<param index="3" name="probe_spacing" type="Vector3" />
+			<param index="4" name="rays_per_probe" type="int" />
+			<param index="5" name="max_ray_distance" type="float" />
+			<param index="6" name="hysteresis" type="float" />
+			<param index="7" name="normal_bias" type="float" />
+			<param index="8" name="view_bias" type="float" />
+			<param index="9" name="energy" type="float" />
+			<param index="10" name="read_sky" type="bool" />
+			<description>
+				Stores dynamic diffuse global illumination (DDGI) configuration for the specified environment RID. [param probe_count] and [param probe_spacing] define the 3D probe grid; the remaining parameters configure the future probe update and sampling core. Values outside the supported ranges are clamped, while non-finite floating-point values are rejected. See the [code]ddgi_*[/code] properties in [Environment] for details.
+				[b]Note:[/b] The current Forward+ implementation is a diagnostic architecture seam: it allocates resources, prepares the RT scene, and writes a recognizable test tint through the GI buffers. It does not yet implement probe tracing, temporal blending, visibility, or real DDGI lighting, and has no effect while path tracing is enabled.
+			</description>
+		</method>
 		<method name="environment_set_fog">
 			<return type="void" />
 			<param index="0" name="env" type="RID" />

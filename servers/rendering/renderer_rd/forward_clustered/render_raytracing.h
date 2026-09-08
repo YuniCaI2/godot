@@ -38,6 +38,7 @@
 #include "core/templates/vector.h"
 #include "servers/rendering/renderer_rd/bindless_block.h"
 #include "servers/rendering/renderer_rd/shaders/raytracing/multimesh_merge.glsl.gen.h"
+#include "servers/rendering/renderer_scene_render.h"
 #include "servers/rendering/rendering_device.h"
 
 #define RB_TEX_RAYTRACING SNAME("raytracing")
@@ -319,6 +320,30 @@ struct RTViewportState {
 	RID scene_uniform_set;
 
 	uint32_t frame_counter = 0;
+	uint32_t instance_count = 0;
+	uint64_t generation = 0;
+};
+
+/// Non-owning current-frame view of one viewport's RT scene.
+struct RTSceneSnapshot {
+	RID tlas;
+	RID geometry_buffer;
+	RID material_buffer;
+	RID bindless_uniform_set;
+	BitField<RTSceneConsumer> consumers = RT_SCENE_CONSUMER_NONE;
+	uint32_t instance_count = 0;
+	uint64_t generation = 0;
+
+	bool is_valid() const {
+		return viewport_state &&
+				viewport_state->generation == generation &&
+				tlas.is_valid();
+	}
+
+private:
+	RTViewportState *viewport_state = nullptr;
+
+	friend class RenderRaytracing;
 };
 
 class RenderRaytracing {
@@ -459,7 +484,9 @@ public:
 
 	void cleanup_caches();
 
+	RTSceneSnapshot build_scene(const RenderDataRD *p_render_data, BitField<RTSceneConsumer> p_consumers, uint32_t p_rt_flags);
 	RTViewportState *build_tlas(const RenderDataRD *p_render_data, uint32_t p_rt_flags);
+	RTViewportState *get_viewport_state(const RTSceneSnapshot &p_snapshot) const;
 	uint32_t gather_lights(const RenderDataRD *p_render_data, RT_LightData *r_light_data, uint32_t p_max_lights);
 	RID update_uniform_set(RTViewportState *p_state, const RenderDataRD *p_render_data, uint32_t p_rt_flags);
 
@@ -483,6 +510,8 @@ public:
 	RID dlss_rr_get_specular_hit_dist(RenderSceneBuffersRD *p_render_buffers) const;
 
 	void register_raytracing_buffer_dependencies(RD::RaytracingListID p_list);
+	void register_raytracing_buffer_dependencies(RD::RaytracingListID p_list, const RTSceneSnapshot &p_snapshot);
+	void register_compute_dependencies(RD::ComputeListID p_list, const RTSceneSnapshot &p_snapshot);
 
 	SceneShaderRaytracing *get_shader() const { return shader; }
 

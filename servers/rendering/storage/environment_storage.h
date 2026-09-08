@@ -172,6 +172,18 @@ private:
 		float sdfgi_probe_bias = 1.1;
 		RSE::EnvironmentSDFGIYScale sdfgi_y_scale = RSE::ENV_SDFGI_Y_SCALE_75_PERCENT;
 
+		// DDGI
+		bool ddgi_enabled = false;
+		Vector3i ddgi_probe_count = Vector3i(16, 8, 16);
+		Vector3 ddgi_probe_spacing = Vector3(2.0, 2.0, 2.0);
+		int ddgi_rays_per_probe = 64;
+		float ddgi_max_ray_distance = 20.0;
+		float ddgi_hysteresis = 0.97;
+		float ddgi_normal_bias = 0.2;
+		float ddgi_view_bias = 0.1;
+		float ddgi_energy = 1.0;
+		bool ddgi_read_sky = true;
+
 		// Pathtracing
 		bool pathtracing_enabled = false;
 		int pathtracing_debug_mode = 0;
@@ -330,6 +342,19 @@ public:
 	float environment_get_sdfgi_normal_bias(RID p_env) const;
 	float environment_get_sdfgi_probe_bias(RID p_env) const;
 	RSE::EnvironmentSDFGIYScale environment_get_sdfgi_y_scale(RID p_env) const;
+
+	// DDGI
+	void environment_set_ddgi(RID p_env, bool p_enable, const Vector3i &p_probe_count, const Vector3 &p_probe_spacing, int p_rays_per_probe, float p_max_ray_distance, float p_hysteresis, float p_normal_bias, float p_view_bias, float p_energy, bool p_read_sky);
+	bool environment_get_ddgi_enabled(RID p_env) const;
+	Vector3i environment_get_ddgi_probe_count(RID p_env) const;
+	Vector3 environment_get_ddgi_probe_spacing(RID p_env) const;
+	int environment_get_ddgi_rays_per_probe(RID p_env) const;
+	float environment_get_ddgi_max_ray_distance(RID p_env) const;
+	float environment_get_ddgi_hysteresis(RID p_env) const;
+	float environment_get_ddgi_normal_bias(RID p_env) const;
+	float environment_get_ddgi_view_bias(RID p_env) const;
+	float environment_get_ddgi_energy(RID p_env) const;
+	bool environment_get_ddgi_read_sky(RID p_env) const;
 
 	// Pathtracing
 	void environment_set_pathtracing(RID p_env, bool p_enable, int p_debug_mode, int p_samples_per_pixel, int p_max_bounces, RSE::PathtracingDenoiser p_denoiser);

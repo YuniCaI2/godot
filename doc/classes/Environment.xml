@@ -82,6 +82,37 @@
 		<member name="background_mode" type="int" setter="set_background" getter="get_background" enum="Environment.BGMode" default="0">
 			The background mode.
 		</member>
+		<member name="ddgi_enabled" type="bool" setter="set_ddgi_enabled" getter="is_ddgi_enabled" default="false">
+			If [code]true[/code], requests the dynamic diffuse global illumination (DDGI) architecture path for this environment.
+			[b]Note:[/b] The current implementation exposes the configuration, allocates per-viewport probe resources, prepares an RT scene snapshot, and runs a diagnostic full-resolution GI-buffer resolve. Probe tracing, blending, classification, relocation, and real DDGI sampling are not implemented yet; the diagnostic tint must not be treated as DDGI lighting. This path is supported only by Forward+ rasterization and has no effect with Mobile or Compatibility rendering, or while [member pathtracing_enabled] is [code]true[/code].
+		</member>
+		<member name="ddgi_energy" type="float" setter="set_ddgi_energy" getter="get_ddgi_energy" default="1.0">
+			Multiplier passed to the current diagnostic resolve and reserved for the future DDGI lighting result. Values are clamped to [code]0.0[/code] or greater.
+		</member>
+		<member name="ddgi_hysteresis" type="float" setter="set_ddgi_hysteresis" getter="get_ddgi_hysteresis" default="0.97">
+			Requested amount of lighting history to retain when the future DDGI probe core updates probes. The current diagnostic facade stores this value but does not accumulate probe lighting. Values are clamped between [code]0.0[/code] and [code]0.9999[/code].
+		</member>
+		<member name="ddgi_max_ray_distance" type="float" setter="set_ddgi_max_ray_distance" getter="get_ddgi_max_ray_distance" default="20.0">
+			Maximum distance, in 3D units, reserved for future DDGI probe rays. It currently expands the RT culling bounds and is forwarded to the facade. Values are clamped to at least [code]0.01[/code].
+		</member>
+		<member name="ddgi_normal_bias" type="float" setter="set_ddgi_normal_bias" getter="get_ddgi_normal_bias" default="0.2">
+			Distance reserved for offsetting future DDGI sampling along the surface normal. The current diagnostic facade only stores and forwards it. Values are clamped to [code]0.0[/code] or greater.
+		</member>
+		<member name="ddgi_probe_count" type="Vector3i" setter="set_ddgi_probe_count" getter="get_ddgi_probe_count" default="Vector3i(16, 8, 16)">
+			Number of DDGI probes along each axis of the probe grid. Higher counts cover the same spacing with a larger grid and increase memory and update cost. Each component is clamped between [code]1[/code] and [code]64[/code].
+		</member>
+		<member name="ddgi_probe_spacing" type="Vector3" setter="set_ddgi_probe_spacing" getter="get_ddgi_probe_spacing" default="Vector3(2, 2, 2)">
+			Distance, in 3D units, between adjacent DDGI probes on each axis. Smaller spacing captures finer lighting detail but covers less area for a given [member ddgi_probe_count]. Each component is clamped to at least [code]0.01[/code].
+		</member>
+		<member name="ddgi_rays_per_probe" type="int" setter="set_ddgi_rays_per_probe" getter="get_ddgi_rays_per_probe" default="64">
+			Requested number of rays for each future DDGI probe update. It currently determines ray-result buffer capacity, but no probe rays are dispatched yet. Values are clamped between [code]1[/code] and [code]1024[/code].
+		</member>
+		<member name="ddgi_read_sky" type="bool" setter="set_ddgi_read_sky" getter="is_ddgi_reading_sky" default="true">
+			If [code]true[/code], prepares and forwards sky radiance for the future DDGI probe core. Probe miss rays are not dispatched by the current diagnostic implementation.
+		</member>
+		<member name="ddgi_view_bias" type="float" setter="set_ddgi_view_bias" getter="get_ddgi_view_bias" default="0.1">
+			Distance reserved for biasing future DDGI sampling in the viewing direction. The current diagnostic facade only stores and forwards it. Values are clamped to [code]0.0[/code] or greater.
+		</member>
 		<member name="fog_aerial_perspective" type="float" setter="set_fog_aerial_perspective" getter="get_fog_aerial_perspective" default="0.0">
 			If set above [code]0.0[/code] (exclusive), blends between the fog's color and the color of the background [Sky], as read from the radiance cubemap. This has a small performance cost when set above [code]0.0[/code]. Must have [member background_mode] set to [constant BG_SKY].
 			This is useful to simulate [url=https://en.wikipedia.org/wiki/Aerial_perspective]aerial perspective[/url] in large scenes with low density fog. However, it is not very useful for high-density fog, as the sky will shine through. When set to [code]1.0[/code], the fog color comes completely from the [Sky]. If set to [code]0.0[/code], aerial perspective is disabled.

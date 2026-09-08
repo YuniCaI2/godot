@@ -2760,7 +2760,31 @@ RTViewportState *RenderRaytracing::build_tlas(const RenderDataRD *p_render_data,
 	build_acceleration_structures(state, dirty_blas_list, dirty_blas_update_list);
 	finalize_buffers(state);
 
+	state->instance_count = blass.size();
+	state->generation++;
 	return state;
+}
+
+RTSceneSnapshot RenderRaytracing::build_scene(const RenderDataRD *p_render_data, BitField<RTSceneConsumer> p_consumers, uint32_t p_rt_flags) {
+	RTSceneSnapshot snapshot;
+	RTViewportState *state = build_tlas(p_render_data, p_rt_flags);
+	if (!state) {
+		return snapshot;
+	}
+
+	snapshot.tlas = state->tlas;
+	snapshot.geometry_buffer = state->geometry_buffer;
+	snapshot.material_buffer = state->material_buffer;
+	snapshot.bindless_uniform_set = bindless_uniform_set;
+	snapshot.consumers = p_consumers;
+	snapshot.instance_count = state->instance_count;
+	snapshot.generation = state->generation;
+	snapshot.viewport_state = state;
+	return snapshot;
+}
+
+RTViewportState *RenderRaytracing::get_viewport_state(const RTSceneSnapshot &p_snapshot) const {
+	return p_snapshot.is_valid() ? p_snapshot.viewport_state : nullptr;
 }
 
 // ---------------------------------------------------------------------------
@@ -3328,6 +3352,49 @@ void RenderRaytracing::register_raytracing_buffer_dependencies(RD::RaytracingLis
 		}
 		if (e->replicated_idx_buffer.is_valid()) {
 			rd->raytracing_list_add_buffer_dependency(p_list, e->replicated_idx_buffer, /*p_writable=*/false);
+		}
+	}
+}
+
+void RenderRaytracing::register_raytracing_buffer_dependencies(RD::RaytracingListID p_list, const RTSceneSnapshot &p_snapshot) {
+	ERR_FAIL_COND(!p_snapshot.is_valid());
+	register_raytracing_buffer_dependencies(p_list);
+}
+
+void RenderRaytracing::register_compute_dependencies(RD::ComputeListID p_list, const RTSceneSnapshot &p_snapshot) {
+	ERR_FAIL_COND(!p_snapshot.is_valid());
+
+	RD *rd = RD::get_singleton();
+	if (mat_ubo_pool_buffer.is_valid()) {
+		rd->compute_list_add_buffer_dependency(p_list, mat_ubo_pool_buffer, /*p_writable=*/false);
+	}
+
+	for (uint32_t i = 0; i < deformed_active_this_frame.size(); i++) {
+		RTDeformedCacheEntry *e = deformed_pool.get_or_null(deformed_active_this_frame[i]);
+		if (!e) {
+			continue;
+		}
+		if (e->owned_vb_full.is_valid()) {
+			rd->compute_list_add_buffer_dependency(p_list, e->owned_vb_full, /*p_writable=*/false);
+		}
+		if (e->prev_pos_vb.is_valid()) {
+			rd->compute_list_add_buffer_dependency(p_list, e->prev_pos_vb, /*p_writable=*/false);
+		}
+	}
+
+	for (uint32_t i = 0; i < merged_mm_active_this_frame.size(); i++) {
+		RTMergedMMEntry *e = merged_mm_pool.get_or_null(merged_mm_active_this_frame[i]);
+		if (!e) {
+			continue;
+		}
+		if (e->merged_vtx_buffer.is_valid()) {
+			rd->compute_list_add_buffer_dependency(p_list, e->merged_vtx_buffer, /*p_writable=*/false);
+		}
+		if (e->merged_attr_buffer.is_valid()) {
+			rd->compute_list_add_buffer_dependency(p_list, e->merged_attr_buffer, /*p_writable=*/false);
+		}
+		if (e->replicated_idx_buffer.is_valid()) {
+			rd->compute_list_add_buffer_dependency(p_list, e->replicated_idx_buffer, /*p_writable=*/false);
 		}
 	}
 }

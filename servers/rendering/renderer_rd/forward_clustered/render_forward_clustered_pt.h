@@ -41,12 +41,8 @@ namespace RendererSceneRenderImplementation {
 // only the scene render entry points to add the raytraced opaque path, DLSS Ray
 // Reconstruction, and the associated debug visualizations.
 class RenderForwardClusteredPT : public RenderForwardClustered {
-	/* Raytracing */
-
-	RenderRaytracing *raytracing = nullptr;
-
-	bool _setup_rt();
 	void _age_out_motion_vectors(const RenderDataRD *p_render_data);
+
 private:
 	RayqueryShaderRD test_rayquery_shader;
 	RID test_shader_version;
@@ -60,7 +56,6 @@ private:
 protected:
 	virtual void _render_scene(RenderDataRD *p_render_data, const Color &p_default_bg_color) override;
 	virtual void _render_buffers_debug_draw(const RenderDataRD *p_render_data) override;
-	virtual void _free_rt_viewport_state(RenderSceneBuffersRD *p_render_buffers) override;
 
 public:
 	RenderForwardClusteredPT();

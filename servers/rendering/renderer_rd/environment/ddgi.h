@@ -46,6 +46,12 @@ class RenderRaytracing;
 struct RTSceneSnapshot;
 } // namespace RendererSceneRenderImplementation
 
+//和RTXGI对齐
+#define RB_TEX_GBUFFER_A SNAME("albedo_flags")
+#define RB_TEX_GBUFFER_B SNAME("position_hit_t")
+#define RB_TEX_GBUFFER_C SNAME("normal")
+#define RB_TEX_GBUFFER_D SNAME("direct_diffuse")
+
 namespace RendererRD {
 
 struct DDGISettings {
@@ -75,6 +81,13 @@ struct DDGIFrameGrid {
 	bool valid = false;
 };
 
+/*
+configure(p_render_buffers)：将 DDGIState 绑定到指定视口的 RenderSceneBuffersRD。
+重复绑定同一对象时不处理；切换对象前会先 free_data()。
+它本身不分配 GPU 资源，资源由 ensure_probe_resources() 延迟创建。
+free_data()：释放 DDGI 的所有 GPU RID（探针 buffer、双缓冲 irradiance/distance atlas），
+清空历史、网格、环境等状态，并解除与 render_buffers 的绑定。
+*/
 class DDGIState : public RenderBufferCustomDataRD {
 	GDCLASS(DDGIState, RenderBufferCustomDataRD);
 
@@ -133,6 +146,9 @@ public:
 
 	bool prepare_frame(const Ref<RenderSceneBuffersRD> &p_render_buffers, const DDGISettings &p_settings, RID p_environment, RID p_scenario, const Vector3 &p_camera_position, uint64_t p_scene_pass, AABB &r_expanded_bounds);
 	bool clear_state(const Ref<RenderSceneBuffersRD> &p_render_buffers);
+
+	bool ensure_ddgi_gbuffer_textures(const Ref<RenderSceneBuffersRD> &p_render_buffers, bool p_clear_existing = false);
+	bool clear_ddgi_gbuffer_textures(const Ref<RenderSceneBuffersRD> &p_render_buffers);
 
 	bool ensure_gi_outputs(const Ref<RenderSceneBuffersRD> &p_render_buffers, bool p_clear_existing = false);
 	bool clear_gi_outputs(const Ref<RenderSceneBuffersRD> &p_render_buffers);

@@ -30,8 +30,6 @@
 
 #include "environment_storage.h"
 
-#include "core/config/project_settings.h"
-
 #ifdef DEBUG_ENABLED
 #include "core/os/os.h"
 #endif
@@ -894,6 +892,100 @@ RSE::EnvironmentSDFGIYScale RendererEnvironmentStorage::environment_get_sdfgi_y_
 	Environment *env = environment_owner.get_or_null(p_env);
 	ERR_FAIL_NULL_V(env, RSE::ENV_SDFGI_Y_SCALE_75_PERCENT);
 	return env->sdfgi_y_scale;
+}
+
+// DDGI
+
+void RendererEnvironmentStorage::environment_set_ddgi(RID p_env, bool p_enable, const Vector3i &p_probe_count, const Vector3 &p_probe_spacing, int p_rays_per_probe, float p_max_ray_distance, float p_hysteresis, float p_normal_bias, float p_view_bias, float p_energy, bool p_read_sky) {
+	Environment *env = environment_owner.get_or_null(p_env);
+	ERR_FAIL_NULL(env);
+	ERR_FAIL_COND_MSG(!p_probe_spacing.is_finite(), "DDGI probe spacing must be finite.");
+	ERR_FAIL_COND_MSG(!Math::is_finite(p_max_ray_distance), "DDGI maximum ray distance must be finite.");
+	ERR_FAIL_COND_MSG(!Math::is_finite(p_hysteresis), "DDGI hysteresis must be finite.");
+	ERR_FAIL_COND_MSG(!Math::is_finite(p_normal_bias), "DDGI normal bias must be finite.");
+	ERR_FAIL_COND_MSG(!Math::is_finite(p_view_bias), "DDGI view bias must be finite.");
+	ERR_FAIL_COND_MSG(!Math::is_finite(p_energy), "DDGI energy must be finite.");
+#ifdef DEBUG_ENABLED
+	if (OS::get_singleton()->get_current_rendering_method() != "forward_plus" && p_enable) {
+		WARN_PRINT_ONCE_ED("Dynamic diffuse global illumination (DDGI) is only available when using the Forward+ renderer.");
+	}
+#endif
+	env->ddgi_enabled = p_enable;
+	env->ddgi_probe_count = Vector3i(
+			CLAMP(p_probe_count.x, 1, 64),
+			CLAMP(p_probe_count.y, 1, 64),
+			CLAMP(p_probe_count.z, 1, 64));
+	env->ddgi_probe_spacing = Vector3(
+			MAX(p_probe_spacing.x, 0.01f),
+			MAX(p_probe_spacing.y, 0.01f),
+			MAX(p_probe_spacing.z, 0.01f));
+	env->ddgi_rays_per_probe = CLAMP(p_rays_per_probe, 1, 1024);
+	env->ddgi_max_ray_distance = MAX(p_max_ray_distance, 0.01f);
+	env->ddgi_hysteresis = CLAMP(p_hysteresis, 0.0f, 0.9999f);
+	env->ddgi_normal_bias = MAX(p_normal_bias, 0.0f);
+	env->ddgi_view_bias = MAX(p_view_bias, 0.0f);
+	env->ddgi_energy = MAX(p_energy, 0.0f);
+	env->ddgi_read_sky = p_read_sky;
+}
+
+bool RendererEnvironmentStorage::environment_get_ddgi_enabled(RID p_env) const {
+	Environment *env = environment_owner.get_or_null(p_env);
+	ERR_FAIL_NULL_V(env, false);
+	return env->ddgi_enabled;
+}
+
+Vector3i RendererEnvironmentStorage::environment_get_ddgi_probe_count(RID p_env) const {
+	Environment *env = environment_owner.get_or_null(p_env);
+	ERR_FAIL_NULL_V(env, Vector3i(16, 8, 16));
+	return env->ddgi_probe_count;
+}
+
+Vector3 RendererEnvironmentStorage::environment_get_ddgi_probe_spacing(RID p_env) const {
+	Environment *env = environment_owner.get_or_null(p_env);
+	ERR_FAIL_NULL_V(env, Vector3(2.0, 2.0, 2.0));
+	return env->ddgi_probe_spacing;
+}
+
+int RendererEnvironmentStorage::environment_get_ddgi_rays_per_probe(RID p_env) const {
+	Environment *env = environment_owner.get_or_null(p_env);
+	ERR_FAIL_NULL_V(env, 64);
+	return env->ddgi_rays_per_probe;
+}
+
+float RendererEnvironmentStorage::environment_get_ddgi_max_ray_distance(RID p_env) const {
+	Environment *env = environment_owner.get_or_null(p_env);
+	ERR_FAIL_NULL_V(env, 20.0);
+	return env->ddgi_max_ray_distance;
+}
+
+float RendererEnvironmentStorage::environment_get_ddgi_hysteresis(RID p_env) const {
+	Environment *env = environment_owner.get_or_null(p_env);
+	ERR_FAIL_NULL_V(env, 0.97);
+	return env->ddgi_hysteresis;
+}
+
+float RendererEnvironmentStorage::environment_get_ddgi_normal_bias(RID p_env) const {
+	Environment *env = environment_owner.get_or_null(p_env);
+	ERR_FAIL_NULL_V(env, 0.2);
+	return env->ddgi_normal_bias;
+}
+
+float RendererEnvironmentStorage::environment_get_ddgi_view_bias(RID p_env) const {
+	Environment *env = environment_owner.get_or_null(p_env);
+	ERR_FAIL_NULL_V(env, 0.1);
+	return env->ddgi_view_bias;
+}
+
+float RendererEnvironmentStorage::environment_get_ddgi_energy(RID p_env) const {
+	Environment *env = environment_owner.get_or_null(p_env);
+	ERR_FAIL_NULL_V(env, 1.0);
+	return env->ddgi_energy;
+}
+
+bool RendererEnvironmentStorage::environment_get_ddgi_read_sky(RID p_env) const {
+	Environment *env = environment_owner.get_or_null(p_env);
+	ERR_FAIL_NULL_V(env, true);
+	return env->ddgi_read_sky;
 }
 
 // Pathtracing

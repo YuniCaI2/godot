@@ -38,6 +38,12 @@
 #include "servers/rendering/storage/environment_storage.h"
 #include "servers/rendering/storage/render_scene_buffers.h"
 
+enum RTSceneConsumer : uint32_t {
+	RT_SCENE_CONSUMER_NONE = 0,
+	RT_SCENE_CONSUMER_PATH_TRACING = 1u << 0,
+	RT_SCENE_CONSUMER_DDGI = 1u << 1,
+};
+
 class RendererSceneRender {
 private:
 	RendererEnvironmentStorage environment_storage;
@@ -71,6 +77,10 @@ public:
 	virtual int sdfgi_get_pending_region_count(const Ref<RenderSceneBuffers> &p_render_buffers) const = 0;
 	virtual AABB sdfgi_get_pending_region_bounds(const Ref<RenderSceneBuffers> &p_render_buffers, int p_region) const = 0;
 	virtual uint32_t sdfgi_get_pending_region_cascade(const Ref<RenderSceneBuffers> &p_render_buffers, int p_region) const = 0;
+
+	/* DDGI PREPARE */
+
+	virtual bool ddgi_prepare_frame(const Ref<RenderSceneBuffers> &, RID, RID, const Vector3 &, AABB &) { return false; }
 
 	/* SKY API */
 
@@ -252,6 +262,19 @@ public:
 	virtual void environment_set_sdfgi_ray_count(RSE::EnvironmentSDFGIRayCount p_ray_count) = 0;
 	virtual void environment_set_sdfgi_frames_to_converge(RSE::EnvironmentSDFGIFramesToConverge p_frames) = 0;
 	virtual void environment_set_sdfgi_frames_to_update_light(RSE::EnvironmentSDFGIFramesToUpdateLight p_update) = 0;
+
+	// DDGI
+	void environment_set_ddgi(RID p_env, bool p_enable, const Vector3i &p_probe_count, const Vector3 &p_probe_spacing, int p_rays_per_probe, float p_max_ray_distance, float p_hysteresis, float p_normal_bias, float p_view_bias, float p_energy, bool p_read_sky);
+	bool environment_get_ddgi_enabled(RID p_env) const;
+	Vector3i environment_get_ddgi_probe_count(RID p_env) const;
+	Vector3 environment_get_ddgi_probe_spacing(RID p_env) const;
+	int environment_get_ddgi_rays_per_probe(RID p_env) const;
+	float environment_get_ddgi_max_ray_distance(RID p_env) const;
+	float environment_get_ddgi_hysteresis(RID p_env) const;
+	float environment_get_ddgi_normal_bias(RID p_env) const;
+	float environment_get_ddgi_view_bias(RID p_env) const;
+	float environment_get_ddgi_energy(RID p_env) const;
+	bool environment_get_ddgi_read_sky(RID p_env) const;
 
 	// Pathtracing
 	void environment_set_pathtracing(RID p_env, bool p_enable, int p_debug_mode, int p_samples_per_pixel, int p_max_bounces, RSE::PathtracingDenoiser p_denoiser);

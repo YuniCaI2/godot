@@ -33,6 +33,7 @@
 #include "core/math/dynamic_bvh.h"
 #include "core/math/transform_interpolator.h"
 #include "core/templates/bin_sorted_array.h"
+#include "core/templates/bit_field.h"
 #include "core/templates/local_vector.h"
 #include "core/templates/paged_allocator.h"
 #include "core/templates/paged_array.h"
@@ -1141,7 +1142,10 @@ public:
 		Frustum frustum;
 
 		// Raytracing: wider AABB cull volume for TLAS and light gathering.
+		BitField<RTSceneConsumer> rt_consumers = {};
 		bool rt_enabled = false;
+		bool rt_include_frustum = false;
+		uint32_t rt_visible_layers = 0;
 		AABB rt_aabb;
 	} cull;
 
@@ -1384,6 +1388,20 @@ public:
 	PASS1(environment_set_sdfgi_ray_count, RSE::EnvironmentSDFGIRayCount)
 	PASS1(environment_set_sdfgi_frames_to_converge, RSE::EnvironmentSDFGIFramesToConverge)
 	PASS1(environment_set_sdfgi_frames_to_update_light, RSE::EnvironmentSDFGIFramesToUpdateLight)
+
+	// DDGI
+	PASS11(environment_set_ddgi, RID, bool, const Vector3i &, const Vector3 &, int, float, float, float, float, float, bool)
+
+	PASS1RC(bool, environment_get_ddgi_enabled, RID)
+	PASS1RC(Vector3i, environment_get_ddgi_probe_count, RID)
+	PASS1RC(Vector3, environment_get_ddgi_probe_spacing, RID)
+	PASS1RC(int, environment_get_ddgi_rays_per_probe, RID)
+	PASS1RC(float, environment_get_ddgi_max_ray_distance, RID)
+	PASS1RC(float, environment_get_ddgi_hysteresis, RID)
+	PASS1RC(float, environment_get_ddgi_normal_bias, RID)
+	PASS1RC(float, environment_get_ddgi_view_bias, RID)
+	PASS1RC(float, environment_get_ddgi_energy, RID)
+	PASS1RC(bool, environment_get_ddgi_read_sky, RID)
 
 	// Pathtracing
 	PASS6(environment_set_pathtracing, RID, bool, int, int, int, RSE::PathtracingDenoiser)
