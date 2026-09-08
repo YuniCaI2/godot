@@ -707,10 +707,21 @@ bool Environment::is_ddgi_reading_sky() const {
 	return ddgi_read_sky;
 }
 
+void Environment::set_ddgi_debug_mode(DDGIDebugMode p_mode) {
+	ERR_FAIL_INDEX(p_mode, DDGI_DEBUG_MAX);
+	ddgi_debug_mode = p_mode;
+	_update_ddgi();
+}
+
+Environment::DDGIDebugMode Environment::get_ddgi_debug_mode() const {
+	return ddgi_debug_mode;
+}
+
 void Environment::_update_ddgi() {
 	RS::get_singleton()->environment_set_ddgi(
 			environment,
 			ddgi_enabled,
+			(int)ddgi_debug_mode,
 			ddgi_probe_count,
 			ddgi_probe_spacing,
 			ddgi_rays_per_probe,
@@ -1628,9 +1639,12 @@ void Environment::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_ddgi_energy"), &Environment::get_ddgi_energy);
 	ClassDB::bind_method(D_METHOD("set_ddgi_read_sky", "read_sky"), &Environment::set_ddgi_read_sky);
 	ClassDB::bind_method(D_METHOD("is_ddgi_reading_sky"), &Environment::is_ddgi_reading_sky);
+	ClassDB::bind_method(D_METHOD("set_ddgi_debug_mode", "mode"), &Environment::set_ddgi_debug_mode);
+	ClassDB::bind_method(D_METHOD("get_ddgi_debug_mode"), &Environment::get_ddgi_debug_mode);
 
 	ADD_GROUP("DDGI", "ddgi_");
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "ddgi_enabled", PROPERTY_HINT_GROUP_ENABLE), "set_ddgi_enabled", "is_ddgi_enabled");
+	ADD_PROPERTY(PropertyInfo(Variant::INT, "ddgi_debug_mode", PROPERTY_HINT_ENUM, "Disabled,Albedo,World Position,Normal,Direct Diffuse"), "set_ddgi_debug_mode", "get_ddgi_debug_mode");
 	ADD_PROPERTY(PropertyInfo(Variant::VECTOR3I, "ddgi_probe_count", PROPERTY_HINT_RANGE, "1,64,1"), "set_ddgi_probe_count", "get_ddgi_probe_count");
 	ADD_PROPERTY(PropertyInfo(Variant::VECTOR3, "ddgi_probe_spacing", PROPERTY_HINT_RANGE, "0.01,64,0.01,or_greater,suffix:m"), "set_ddgi_probe_spacing", "get_ddgi_probe_spacing");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "ddgi_rays_per_probe", PROPERTY_HINT_RANGE, "1,1024,1"), "set_ddgi_rays_per_probe", "get_ddgi_rays_per_probe");
@@ -1857,6 +1871,12 @@ void Environment::_bind_methods() {
 	BIND_ENUM_CONSTANT(GLOW_BLEND_MODE_SOFTLIGHT);
 	BIND_ENUM_CONSTANT(GLOW_BLEND_MODE_REPLACE);
 	BIND_ENUM_CONSTANT(GLOW_BLEND_MODE_MIX);
+
+	BIND_ENUM_CONSTANT(DDGI_DEBUG_DISABLED);
+	BIND_ENUM_CONSTANT(DDGI_DEBUG_ALBEDO);
+	BIND_ENUM_CONSTANT(DDGI_DEBUG_WORLD_POSITION);
+	BIND_ENUM_CONSTANT(DDGI_DEBUG_NORMAL);
+	BIND_ENUM_CONSTANT(DDGI_DEBUG_DIRECT_DIFFUSE);
 
 	BIND_ENUM_CONSTANT(RT_DEBUG_DISABLED);
 	BIND_ENUM_CONSTANT(RT_DEBUG_MIRROR_REFLECTION);

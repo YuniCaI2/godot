@@ -29,14 +29,18 @@
 
 #include "ddgi.h"
 
+#include "core/error/error_macros.h"
 #include "core/math/math_funcs.h"
 #include "servers/rendering/renderer_rd/environment/gi.h"
 #include "servers/rendering/renderer_rd/forward_clustered/render_raytracing.h"
 #include "servers/rendering/renderer_rd/storage_rd/material_storage.h"
+#include "servers/rendering/renderer_rd/storage_rd/mesh_storage.h"
 #include "servers/rendering/renderer_rd/storage_rd/render_data_rd.h"
 #include "servers/rendering/renderer_rd/storage_rd/render_scene_buffers_rd.h"
+#include "servers/rendering/renderer_rd/storage_rd/texture_storage.h"
 #include "servers/rendering/renderer_rd/uniform_set_cache_rd.h"
 #include "servers/rendering/rendering_device.h"
+#include "servers/rendering/storage/environment_storage.h"
 
 namespace RendererRD {
 
@@ -296,7 +300,8 @@ bool _is_ddgi_gbuffer_compatible(const Ref<RenderSceneBuffersRD> &p_render_buffe
 			RD::TEXTURE_USAGE_CAN_COPY_TO_BIT;
 
 	const bool format_compatible =
-			(p_name == RB_TEX_GBUFFER_A && texture_format.format == RD::DATA_FORMAT_R8G8B8A8_UNORM) ||
+			((p_name == RB_TEX_GBUFFER_A || p_name == RB_TEX_GBUFFER_DEBUG) &&
+					texture_format.format == RD::DATA_FORMAT_R8G8B8A8_UNORM) ||
 			((p_name == RB_TEX_GBUFFER_B || p_name == RB_TEX_GBUFFER_C || p_name == RB_TEX_GBUFFER_D) &&
 					texture_format.format == RD::DATA_FORMAT_R32G32B32A32_SFLOAT);
 	return format_compatible &&
@@ -399,6 +404,7 @@ void DDGIState::prepare_frame(const DDGISettings &p_settings, RID p_environment,
 	environment = p_environment;
 	scenario = p_scenario;
 	prepared_scene_pass = p_scene_pass;
+	committed_scene_pass = 0;
 }
 
 bool DDGIState::ensure_probe_resources() {
@@ -495,6 +501,7 @@ void DDGIState::commit_frame(uint64_t p_snapshot_generation) {
 	ERR_FAIL_COND(p_snapshot_generation == 0);
 
 	snapshot_generation = p_snapshot_generation;
+	committed_scene_pass = prepared_scene_pass;
 	history_reset = false;
 }
 
@@ -504,6 +511,10 @@ bool DDGIState::is_configured_for(const RenderSceneBuffersRD *p_render_buffers) 
 
 bool DDGIState::is_prepared_for_scene_pass(uint64_t p_scene_pass) const {
 	return resources_ready && current_grid.valid && prepared_scene_pass != 0 && prepared_scene_pass == p_scene_pass;
+}
+
+bool DDGIState::is_committed_for_scene_pass(uint64_t p_scene_pass) const {
+	return is_prepared_for_scene_pass(p_scene_pass) && committed_scene_pass == p_scene_pass;
 }
 
 void DDGIState::configure(RenderSceneBuffersRD *p_render_buffers) {
@@ -528,6 +539,7 @@ void DDGIState::_free_resources() {
 	}
 
 	current_atlas_index = 0;
+	committed_scene_pass = 0;
 	snapshot_generation = 0;
 	resources_ready = false;
 	resource_failure_reported = false;
@@ -541,6 +553,7 @@ void DDGIState::free_data() {
 	current_grid = DDGIFrameGrid();
 	previous_grid = DDGIFrameGrid();
 	prepared_scene_pass = 0;
+	committed_scene_pass = 0;
 	snapshot_generation = 0;
 	current_atlas_index = 0;
 	history_reset = true;
@@ -579,15 +592,60 @@ DDGIFrameGrid DDGI::_build_frame_grid(const DDGISettings &p_settings, const Vect
 	return grid;
 }
 
-DDGI::DDGI() {
+DDGI::DDGI(bool p_use_radiance_octmap_array) {
+	use_radiance_octmap_array = p_use_radiance_octmap_array;
+
 	Vector<String> shader_modes;
 	shader_modes.push_back("");
+
+	String gbuffer_defines;
+	if (p_use_radiance_octmap_array) {
+		gbuffer_defines += "\n#define USE_RADIANCE_OCTMAP_ARRAY\n";
+	}
+	gbuffer_shader.initialize(shader_modes, gbuffer_defines);
+	gbuffer_shader_version = gbuffer_shader.version_create();
+	const RID gbuffer_shader_rid = gbuffer_shader.version_get_shader(gbuffer_shader_version, 0);
+	if (gbuffer_shader_rid.is_valid()) {
+		const RD::PipelineShader pipeline_shader = { gbuffer_shader_rid, {} };
+		const RD::HitGroup empty_hit_group;
+		gbuffer_pipeline = RD::get_singleton()->raytracing_pipeline_create(
+				{ &pipeline_shader, 1 },
+				{},
+				{ &empty_hit_group, 1 },
+				1);
+	}
+	if (gbuffer_pipeline.is_valid()) {
+		gbuffer_hit_sbt = RD::get_singleton()->hit_sbt_create(gbuffer_pipeline, 1);
+		if (gbuffer_hit_sbt.is_valid()) {
+			const RD::HitShaderBindingTableRange range = RD::get_singleton()->hit_sbt_range_alloc(gbuffer_hit_sbt, 1);
+			const uint32_t empty_hit_group_index = 0;
+			if (!range ||
+					RD::get_singleton()->hit_sbt_range_update(gbuffer_hit_sbt, range, 0, { &empty_hit_group_index, 1 }) != OK) {
+				RD::get_singleton()->free_rid(gbuffer_hit_sbt);
+				gbuffer_hit_sbt = RID();
+			}
+		}
+	}
+
 	resolve_shader.initialize(shader_modes);
 	resolve_shader_version = resolve_shader.version_create();
 	resolve_pipeline = RD::get_singleton()->compute_pipeline_create(resolve_shader.version_get_shader(resolve_shader_version, 0));
 }
 
 DDGI::~DDGI() {
+	if (gbuffer_hit_sbt.is_valid()) {
+		RD::get_singleton()->free_rid(gbuffer_hit_sbt);
+		gbuffer_hit_sbt = RID();
+	}
+	if (gbuffer_pipeline.is_valid()) {
+		RD::get_singleton()->free_rid(gbuffer_pipeline);
+		gbuffer_pipeline = RID();
+	}
+	if (gbuffer_shader_version.is_valid()) {
+		gbuffer_shader.version_free(gbuffer_shader_version);
+		gbuffer_shader_version = RID();
+	}
+
 	if (resolve_pipeline.is_valid()) {
 		RD::get_singleton()->free_rid(resolve_pipeline);
 		resolve_pipeline = RID();
@@ -609,10 +667,11 @@ bool DDGI::prepare_frame(const Ref<RenderSceneBuffersRD> &p_render_buffers, cons
 			state->free_data();
 		}
 		if (p_render_buffers->has_custom_data(RB_SCOPE_DDGI)) {
-			p_render_buffers->set_custom_data(RB_SCOPE_DDGI, Ref<RenderBufferCustomDataRD>());
+			p_render_buffers->set_custom_data(RB_SCOPE_DDGI, Ref<RenderBufferCustomDataRD>()); //相当于清空数据
 		}
+
 		// Discard DDGI-owned G-buffers so later frames cannot reuse partial data.
-		p_render_buffers->clear_context(RB_SCOPE_DDGI);
+		p_render_buffers->clear_context(RB_SCOPE_DDGI); //这里会吧纹理一起删掉
 		// A fallback GI backend runs immediately after this pre-cull hook. Do
 		// not leave DDGI-sized outputs for it to mistake for valid history.
 		p_render_buffers->clear_context(RB_SCOPE_GI);
@@ -622,8 +681,9 @@ bool DDGI::prepare_frame(const Ref<RenderSceneBuffersRD> &p_render_buffers, cons
 	if (!p_settings.is_valid() || !p_camera_position.is_finite()) {
 		return fail_preparation();
 	}
-	if (!resolve_shader_version.is_valid() || !resolve_pipeline.is_valid()) {
-		ERR_PRINT_ONCE("DDGI resolve shader initialization failed.");
+	if (!gbuffer_shader_version.is_valid() || !gbuffer_pipeline.is_valid() || !gbuffer_hit_sbt.is_valid() ||
+			!resolve_shader_version.is_valid() || !resolve_pipeline.is_valid()) {
+		ERR_PRINT_ONCE("DDGI shader initialization failed.");
 		return fail_preparation();
 	}
 
@@ -654,7 +714,7 @@ bool DDGI::prepare_frame(const Ref<RenderSceneBuffersRD> &p_render_buffers, cons
 
 	state->prepare_frame(p_settings, p_environment, p_scenario, grid, p_scene_pass);
 	if (!state->ensure_probe_resources() ||
-			!ensure_gi_outputs(p_render_buffers, entering_ddgi)) {
+			!ensure_gi_outputs(p_render_buffers, entering_ddgi) || !ensure_ddgi_gbuffer_textures(p_render_buffers, entering_ddgi)) {
 		return fail_preparation();
 	}
 
@@ -691,7 +751,8 @@ bool DDGI::ensure_ddgi_gbuffer_textures(const Ref<RenderSceneBuffersRD> &p_rende
 			!_is_ddgi_gbuffer_compatible(p_render_buffers, RB_TEX_GBUFFER_A) ||
 			!_is_ddgi_gbuffer_compatible(p_render_buffers, RB_TEX_GBUFFER_B) ||
 			!_is_ddgi_gbuffer_compatible(p_render_buffers, RB_TEX_GBUFFER_C) ||
-			!_is_ddgi_gbuffer_compatible(p_render_buffers, RB_TEX_GBUFFER_D)) {
+			!_is_ddgi_gbuffer_compatible(p_render_buffers, RB_TEX_GBUFFER_D) ||
+			!_is_ddgi_gbuffer_compatible(p_render_buffers, RB_TEX_GBUFFER_DEBUG)) {
 		p_render_buffers->clear_context(RB_SCOPE_DDGI);
 	}
 
@@ -707,11 +768,15 @@ bool DDGI::ensure_ddgi_gbuffer_textures(const Ref<RenderSceneBuffersRD> &p_rende
 	if (!p_render_buffers->has_texture(RB_SCOPE_DDGI, RB_TEX_GBUFFER_D)) {
 		p_render_buffers->create_texture(RB_SCOPE_DDGI, RB_TEX_GBUFFER_D, RD::DATA_FORMAT_R32G32B32A32_SFLOAT, usage_bits, RD::TEXTURE_SAMPLES_1);
 	}
+	if (!p_render_buffers->has_texture(RB_SCOPE_DDGI, RB_TEX_GBUFFER_DEBUG)) {
+		p_render_buffers->create_texture(RB_SCOPE_DDGI, RB_TEX_GBUFFER_DEBUG, RD::DATA_FORMAT_R8G8B8A8_UNORM, usage_bits, RD::TEXTURE_SAMPLES_1);
+	}
 
 	if (!_is_ddgi_gbuffer_compatible(p_render_buffers, RB_TEX_GBUFFER_A) ||
 			!_is_ddgi_gbuffer_compatible(p_render_buffers, RB_TEX_GBUFFER_B) ||
 			!_is_ddgi_gbuffer_compatible(p_render_buffers, RB_TEX_GBUFFER_C) ||
-			!_is_ddgi_gbuffer_compatible(p_render_buffers, RB_TEX_GBUFFER_D)) {
+			!_is_ddgi_gbuffer_compatible(p_render_buffers, RB_TEX_GBUFFER_D) ||
+			!_is_ddgi_gbuffer_compatible(p_render_buffers, RB_TEX_GBUFFER_DEBUG)) {
 		p_render_buffers->clear_context(RB_SCOPE_DDGI);
 		return false;
 	}
@@ -727,7 +792,8 @@ bool DDGI::clear_ddgi_gbuffer_textures(const Ref<RenderSceneBuffersRD> &p_render
 	if (!_is_ddgi_gbuffer_compatible(p_render_buffers, RB_TEX_GBUFFER_A) ||
 			!_is_ddgi_gbuffer_compatible(p_render_buffers, RB_TEX_GBUFFER_B) ||
 			!_is_ddgi_gbuffer_compatible(p_render_buffers, RB_TEX_GBUFFER_C) ||
-			!_is_ddgi_gbuffer_compatible(p_render_buffers, RB_TEX_GBUFFER_D)) {
+			!_is_ddgi_gbuffer_compatible(p_render_buffers, RB_TEX_GBUFFER_D) ||
+			!_is_ddgi_gbuffer_compatible(p_render_buffers, RB_TEX_GBUFFER_DEBUG)) {
 		p_render_buffers->clear_context(RB_SCOPE_DDGI);
 		return true;
 	}
@@ -735,7 +801,8 @@ bool DDGI::clear_ddgi_gbuffer_textures(const Ref<RenderSceneBuffersRD> &p_render
 	if (RD::get_singleton()->texture_clear(p_render_buffers->get_texture(RB_SCOPE_DDGI, RB_TEX_GBUFFER_A), Color(0, 0, 0, 0), 0, 1, 0, 1) != OK ||
 			RD::get_singleton()->texture_clear(p_render_buffers->get_texture(RB_SCOPE_DDGI, RB_TEX_GBUFFER_B), Color(0, 0, 0, 0), 0, 1, 0, 1) != OK ||
 			RD::get_singleton()->texture_clear(p_render_buffers->get_texture(RB_SCOPE_DDGI, RB_TEX_GBUFFER_C), Color(0, 0, 0, 0), 0, 1, 0, 1) != OK ||
-			RD::get_singleton()->texture_clear(p_render_buffers->get_texture(RB_SCOPE_DDGI, RB_TEX_GBUFFER_D), Color(0, 0, 0, 0), 0, 1, 0, 1) != OK) {
+			RD::get_singleton()->texture_clear(p_render_buffers->get_texture(RB_SCOPE_DDGI, RB_TEX_GBUFFER_D), Color(0, 0, 0, 0), 0, 1, 0, 1) != OK ||
+			RD::get_singleton()->texture_clear(p_render_buffers->get_texture(RB_SCOPE_DDGI, RB_TEX_GBUFFER_DEBUG), Color(0, 0, 0, 0), 0, 1, 0, 1) != OK) {
 		p_render_buffers->clear_context(RB_SCOPE_DDGI);
 		return false;
 	}
@@ -800,6 +867,159 @@ bool DDGI::clear_gi_outputs(const Ref<RenderSceneBuffersRD> &p_render_buffers) {
 		p_render_buffers->clear_context(RB_SCOPE_GI);
 		return false;
 	}
+	return true;
+}
+
+bool DDGI::update_ddgi_gbuffer(
+		const Ref<DDGIState> &p_state,
+		const RendererSceneRenderImplementation::RTSceneSnapshot &p_snapshot,
+		RendererSceneRenderImplementation::RenderRaytracing &p_rt_service,
+		const RenderDataRD *p_render_data,
+		RID p_sky_radiance) {
+	ERR_FAIL_COND_V(p_state.is_null(), false);
+	ERR_FAIL_NULL_V(p_render_data, false);
+	ERR_FAIL_COND_V(p_render_data->render_buffers.is_null(), false);
+	ERR_FAIL_COND_V(!p_state->is_configured_for(p_render_data->render_buffers.ptr()), false);
+	ERR_FAIL_COND_V(!p_state->current_grid.valid || p_state->prepared_scene_pass == 0, false);
+	ERR_FAIL_COND_V(!p_snapshot.is_valid(), false);
+	ERR_FAIL_COND_V(!p_snapshot.consumers.has_flag(RT_SCENE_CONSUMER_DDGI), false);
+	ERR_FAIL_COND_V(!gbuffer_pipeline.is_valid() || !gbuffer_hit_sbt.is_valid(), false);
+
+	Ref<RenderSceneBuffersRD> render_buffers = p_render_data->render_buffers;
+	if (!ensure_ddgi_gbuffer_textures(render_buffers)) {
+		return false;
+	}
+
+	RendererSceneRenderImplementation::RTViewportState *rt_state = p_rt_service.get_viewport_state(p_snapshot);
+	ERR_FAIL_NULL_V(rt_state, false);
+
+	RendererSceneRenderImplementation::RT_LightData light_data[RendererSceneRenderImplementation::RT_LIGHTS_MAX] = {};
+	const uint32_t light_count = p_rt_service.gather_lights(
+			p_render_data,
+			light_data,
+			RendererSceneRenderImplementation::RT_LIGHTS_MAX);
+	const uint32_t light_buffer_size =
+			RendererSceneRenderImplementation::RT_LIGHTS_MAX *
+			sizeof(RendererSceneRenderImplementation::RT_LightData);
+	if (!rt_state->light_buffer.is_valid()) {
+		rt_state->light_buffer = RD::get_singleton()->storage_buffer_create(light_buffer_size);
+		if (rt_state->light_buffer.is_valid()) {
+			RD::get_singleton()->set_resource_name(rt_state->light_buffer, "DDGI Light Buffer");
+		}
+	}
+	if (!rt_state->light_buffer.is_valid() ||
+			RD::get_singleton()->buffer_update(rt_state->light_buffer, 0, light_buffer_size, light_data) != OK) {
+		return false;
+	}
+
+	const RID shader = gbuffer_shader.version_get_shader(gbuffer_shader_version, 0);
+	ERR_FAIL_COND_V(!shader.is_valid(), false);
+
+	RendererRD::TextureStorage *texture_storage = RendererRD::TextureStorage::get_singleton();
+	ERR_FAIL_NULL_V(texture_storage, false);
+	RendererRD::MaterialStorage *material_storage = RendererRD::MaterialStorage::get_singleton();
+	ERR_FAIL_NULL_V(material_storage, false);
+	RendererRD::MeshStorage *mesh_storage = RendererRD::MeshStorage::get_singleton();
+	ERR_FAIL_NULL_V(mesh_storage, false);
+
+	RID sky_radiance = p_state->settings.read_sky ? p_sky_radiance : RID();
+	if (!sky_radiance.is_valid()) {
+		sky_radiance = texture_storage->texture_rd_get_default(
+				use_radiance_octmap_array
+						? RendererRD::TextureStorage::DEFAULT_RD_TEXTURE_2D_ARRAY_BLACK
+						: RendererRD::TextureStorage::DEFAULT_RD_TEXTURE_BLACK);
+	}
+
+	LocalVector<RD::Uniform> uniforms;
+	uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 0, render_buffers->get_texture(RB_SCOPE_DDGI, RB_TEX_GBUFFER_A)));
+	uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_ACCELERATION_STRUCTURE, 1, p_snapshot.tlas));
+
+	const RID scene_uniform_buffer = p_render_data->scene_data->get_uniform_buffer();
+	//Debug
+	//print_line(vformat("directional_light_count: %d", p_render_data->lights->size()));
+	ERR_FAIL_COND_V(!scene_uniform_buffer.is_valid(), false);
+	uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 2, scene_uniform_buffer));
+
+	ERR_FAIL_COND_V(
+			p_snapshot.instance_count > 0 &&
+					(!p_snapshot.geometry_buffer.is_valid() || !p_snapshot.material_buffer.is_valid()),
+			false);
+	const RID default_storage_buffer = mesh_storage->get_default_rd_storage_buffer();
+	uniforms.push_back(RD::Uniform(
+			RD::UNIFORM_TYPE_STORAGE_BUFFER,
+			3,
+			p_snapshot.geometry_buffer.is_valid() ? p_snapshot.geometry_buffer : default_storage_buffer));
+	uniforms.push_back(RD::Uniform(
+			RD::UNIFORM_TYPE_STORAGE_BUFFER,
+			5,
+			p_snapshot.material_buffer.is_valid() ? p_snapshot.material_buffer : default_storage_buffer));
+	uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 7, sky_radiance));
+	uniforms.push_back(RD::Uniform(
+			RD::UNIFORM_TYPE_SAMPLER,
+			8,
+			material_storage->sampler_rd_get_default(
+					RSE::CANVAS_ITEM_TEXTURE_FILTER_LINEAR_WITH_MIPMAPS,
+					RSE::CANVAS_ITEM_TEXTURE_REPEAT_DISABLED)));
+	uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 13, rt_state->light_buffer));
+	uniforms.push_back(RD::Uniform(
+			RD::UNIFORM_TYPE_SAMPLER,
+			24,
+			material_storage->sampler_rd_get_default(
+					RSE::CANVAS_ITEM_TEXTURE_FILTER_NEAREST_WITH_MIPMAPS,
+					RSE::CANVAS_ITEM_TEXTURE_REPEAT_ENABLED)));
+	uniforms.push_back(RD::Uniform(
+			RD::UNIFORM_TYPE_SAMPLER,
+			25,
+			material_storage->sampler_rd_get_default(
+					RSE::CANVAS_ITEM_TEXTURE_FILTER_LINEAR_WITH_MIPMAPS,
+					RSE::CANVAS_ITEM_TEXTURE_REPEAT_ENABLED)));
+	uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 29, render_buffers->get_texture(RB_SCOPE_DDGI, RB_TEX_GBUFFER_B)));
+	uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 30, render_buffers->get_texture(RB_SCOPE_DDGI, RB_TEX_GBUFFER_C)));
+	uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 31, render_buffers->get_texture(RB_SCOPE_DDGI, RB_TEX_GBUFFER_D)));
+	uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 32, render_buffers->get_texture(RB_SCOPE_DDGI, RB_TEX_GBUFFER_DEBUG)));
+
+	UniformSetCacheRD *uniform_set_cache = UniformSetCacheRD::get_singleton();
+	ERR_FAIL_NULL_V(uniform_set_cache, false);
+	const RID uniform_set = uniform_set_cache->get_cache_vec(shader, 0, uniforms);
+	ERR_FAIL_COND_V(!uniform_set.is_valid() || !RD::get_singleton()->uniform_set_is_valid(uniform_set), false);
+
+	const RID bindless_set = p_rt_service.finalize_bindless_uniform_set(shader, 1);
+	ERR_FAIL_COND_V(!bindless_set.is_valid() || !RD::get_singleton()->uniform_set_is_valid(bindless_set), false);
+
+	GBufferPushConstant push_constant = {};
+	push_constant.light_count = light_count;
+	push_constant.frame_index = uint32_t(p_state->prepared_scene_pass);
+	push_constant.normal_bias = p_state->settings.normal_bias;
+	push_constant.view_bias = p_state->settings.view_bias;
+	RendererEnvironmentStorage *environment_storage = RendererEnvironmentStorage::get_singleton();
+	ERR_FAIL_NULL_V(environment_storage, false);
+	push_constant.debug_mode = uint32_t(environment_storage->environment_get_ddgi_debug_mode(p_state->environment));
+
+	const Vector3 debug_bounds_min = p_state->current_grid.origin - p_state->settings.probe_spacing * 0.5f;
+	const Vector3 debug_bounds_size(
+			p_state->settings.probe_spacing.x * p_state->settings.probe_count.x,
+			p_state->settings.probe_spacing.y * p_state->settings.probe_count.y,
+			p_state->settings.probe_spacing.z * p_state->settings.probe_count.z);
+	push_constant.debug_bounds_min[0] = debug_bounds_min.x;
+	push_constant.debug_bounds_min[1] = debug_bounds_min.y;
+	push_constant.debug_bounds_min[2] = debug_bounds_min.z;
+	push_constant.debug_bounds_inv_size[0] = 1.0f / debug_bounds_size.x;
+	push_constant.debug_bounds_inv_size[1] = 1.0f / debug_bounds_size.y;
+	push_constant.debug_bounds_inv_size[2] = 1.0f / debug_bounds_size.z;
+	static_assert(sizeof(GBufferPushConstant) == 64);
+
+	const Size2i screen_size = render_buffers->get_internal_size();
+	RD::get_singleton()->draw_command_begin_label("DDGI GBuffer");
+	RD::RaytracingListID raytracing_list = RD::get_singleton()->raytracing_list_begin();
+	RD::get_singleton()->raytracing_list_bind_raytracing_pipeline(raytracing_list, gbuffer_pipeline);
+	RD::get_singleton()->raytracing_list_bind_uniform_set(raytracing_list, uniform_set, 0);
+	RD::get_singleton()->raytracing_list_bind_uniform_set(raytracing_list, bindless_set, 1);
+	p_rt_service.register_raytracing_buffer_dependencies(raytracing_list, p_snapshot);
+	RD::get_singleton()->raytracing_list_set_push_constant(raytracing_list, &push_constant, sizeof(GBufferPushConstant));
+	RD::get_singleton()->raytracing_list_trace_rays(raytracing_list, 0, gbuffer_hit_sbt, screen_size.x, screen_size.y, 1);
+	RD::get_singleton()->raytracing_list_end();
+	RD::get_singleton()->draw_command_end_label();
+
 	return true;
 }
 

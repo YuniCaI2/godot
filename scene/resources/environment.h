@@ -77,6 +77,15 @@ public:
 		SDFGI_Y_SCALE_100_PERCENT,
 	};
 
+	enum DDGIDebugMode {
+		DDGI_DEBUG_DISABLED,
+		DDGI_DEBUG_ALBEDO,
+		DDGI_DEBUG_WORLD_POSITION,
+		DDGI_DEBUG_NORMAL,
+		DDGI_DEBUG_DIRECT_DIFFUSE,
+		DDGI_DEBUG_MAX
+	};
+
 	enum PathtracingDebugMode {
 		RT_DEBUG_DISABLED,
 		RT_DEBUG_MIRROR_REFLECTION,
@@ -201,6 +210,7 @@ private:
 	float ddgi_view_bias = 0.1;
 	float ddgi_energy = 1.0;
 	bool ddgi_read_sky = true;
+	DDGIDebugMode ddgi_debug_mode = DDGI_DEBUG_DISABLED;
 	void _update_ddgi();
 
 	// Pathtracing
@@ -419,6 +429,8 @@ public:
 	float get_ddgi_energy() const;
 	void set_ddgi_read_sky(bool p_read_sky);
 	bool is_ddgi_reading_sky() const;
+	void set_ddgi_debug_mode(DDGIDebugMode p_mode);
+	DDGIDebugMode get_ddgi_debug_mode() const;
 
 	// Pathtracing
 	void set_pathtracing_enabled(bool p_enabled);
@@ -542,5 +554,6 @@ VARIANT_ENUM_CAST(Environment::ReflectionSource)
 VARIANT_ENUM_CAST(Environment::ToneMapper)
 VARIANT_ENUM_CAST(Environment::SDFGIYScale)
 VARIANT_ENUM_CAST(Environment::GlowBlendMode)
+VARIANT_ENUM_CAST(Environment::DDGIDebugMode)
 VARIANT_ENUM_CAST(Environment::PathtracingDebugMode)
 VARIANT_ENUM_CAST(Environment::FogMode)

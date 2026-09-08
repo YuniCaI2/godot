@@ -66,6 +66,7 @@ public:
 		virtual void set_lightmap_capture(const Color *p_sh9) override {}
 		virtual void set_instance_shader_uniforms_offset(int32_t p_offset) override {}
 		virtual void set_cast_double_sided_shadows(bool p_enable) override {}
+		virtual void set_cast_shadows_only(bool p_enable) override {}
 
 		virtual Transform3D get_transform() override { return Transform3D(); }
 		virtual AABB get_aabb() override { return AABB(); }

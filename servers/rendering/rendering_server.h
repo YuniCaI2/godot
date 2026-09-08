@@ -698,7 +698,7 @@ public:
 
 	virtual void environment_set_sdfgi_frames_to_update_light(RSE::EnvironmentSDFGIFramesToUpdateLight p_update) = 0;
 
-	virtual void environment_set_ddgi(RID p_env, bool p_enable, const Vector3i &p_probe_count, const Vector3 &p_probe_spacing, int p_rays_per_probe, float p_max_ray_distance, float p_hysteresis, float p_normal_bias, float p_view_bias, float p_energy, bool p_read_sky) = 0;
+	virtual void environment_set_ddgi(RID p_env, bool p_enable, int p_debug_mode, const Vector3i &p_probe_count, const Vector3 &p_probe_spacing, int p_rays_per_probe, float p_max_ray_distance, float p_hysteresis, float p_normal_bias, float p_view_bias, float p_energy, bool p_read_sky) = 0;
 
 	// Pathtracing
 	virtual void environment_set_pathtracing(RID p_env, bool p_enable, int p_debug_mode, int p_samples_per_pixel, int p_max_bounces, RSE::PathtracingDenoiser p_denoiser) = 0;

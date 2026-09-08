@@ -2033,6 +2033,7 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 
 	auto fail_ddgi_frame = [&]() {
 		if (ddgi) {
+			ddgi->clear_ddgi_gbuffer_textures(rb);
 			ddgi->clear_gi_outputs(rb);
 		}
 		if (ddgi_state.is_valid()) {
@@ -2397,7 +2398,9 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 			RID sky_rid = environment_get_sky(p_render_data->environment);
 			if (sky_rid.is_valid()) {
 				sky.update_radiance_buffers(rb, p_render_data->environment, p_render_data->scene_data->cam_transform.origin, time, sky_luminance_multiplier, sky_brightness_multiplier);
-				radiance_texture = sky.sky_get_radiance_texture_rd(sky_rid);
+				radiance_texture = is_using_radiance_octmap_array()
+						? sky.sky_get_radiance_texture_rd(sky_rid)
+						: sky.sky_get_radiance_2d_texture_rd(sky_rid);
 			} else {
 				// do not try to draw sky if invalid
 				draw_sky = false;
@@ -2418,6 +2421,10 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 		clear_color = p_default_bg_color.srgb_to_linear();
 	}
 
+	if (ddgi_frame_ready && !ddgi->update_ddgi_gbuffer(ddgi_state, ddgi_snapshot, *raytracing, p_render_data, radiance_texture)) {
+		WARN_PRINT_ONCE("DDGI G-buffer update failed; clearing its diagnostic output for this frame.");
+		fail_ddgi_frame();
+	}
 	if (ddgi_frame_ready && !ddgi->update_probes(ddgi_state, ddgi_snapshot, *raytracing, p_render_data, radiance_texture)) {
 		WARN_PRINT_ONCE("DDGI probe update preparation failed; clearing its diagnostic output for this frame.");
 		fail_ddgi_frame();
@@ -2859,6 +2866,33 @@ void RenderForwardClustered::_render_buffers_debug_draw(const RenderDataRD *p_re
 		RID ambient_texture = rb->get_texture(RB_SCOPE_GI, RB_TEX_AMBIENT);
 		RID reflection_texture = rb->get_texture(RB_SCOPE_GI, RB_TEX_REFLECTION);
 		copy_effects->copy_to_fb_rect(ambient_texture, texture_storage->render_target_get_rd_framebuffer(render_target), Rect2(Vector2(), rtsize), false, false, false, true, reflection_texture, rb->get_view_count() > 1);
+	}
+
+	Ref<RendererRD::DDGIState> debug_ddgi_state;
+	if (rb->has_custom_data(RB_SCOPE_DDGI)) {
+		debug_ddgi_state = rb->get_custom_data(RB_SCOPE_DDGI);
+	}
+	if (debug_ddgi_state.is_valid() &&
+			debug_ddgi_state->is_committed_for_scene_pass(get_scene_pass()) &&
+			get_debug_draw_mode() == RSE::VIEWPORT_DEBUG_DRAW_DISABLED &&
+			p_render_data->environment.is_valid() &&
+			environment_get_ddgi_debug_mode(p_render_data->environment) != 0 &&
+			rb->has_texture(RB_SCOPE_DDGI, RB_TEX_GBUFFER_DEBUG)) {
+		const Size2i rtsize = texture_storage->render_target_get_size(render_target);
+		const RID debug_texture = rb->get_texture(RB_SCOPE_DDGI, RB_TEX_GBUFFER_DEBUG);
+		const bool convert_to_linear = texture_storage->render_target_is_using_hdr(render_target);
+		copy_effects->copy_to_fb_rect(
+				debug_texture,
+				texture_storage->render_target_get_rd_framebuffer(render_target),
+				Rect2(Vector2(), rtsize),
+				false,
+				false,
+				false,
+				false,
+				RID(),
+				false,
+				false,
+				convert_to_linear);
 	}
 }
 
@@ -4302,6 +4336,9 @@ bool RenderForwardClustered::ddgi_prepare_frame(const Ref<RenderSceneBuffers> &p
 			state_removed = true;
 		}
 
+		// The DDGI facade may not exist during teardown, but its viewport-owned
+		// named textures must not survive the state that produced them.
+		rb->clear_context(RB_SCOPE_DDGI);
 		if (state_removed) {
 			// DDGI resolve will share these named textures with the other GI backends.
 			rb->clear_context(RB_SCOPE_GI);
@@ -4338,7 +4375,7 @@ bool RenderForwardClustered::ddgi_prepare_frame(const Ref<RenderSceneBuffers> &p
 	settings.read_sky = environment_get_ddgi_read_sky(p_environment);
 
 	if (!ddgi) {
-		ddgi = memnew(RendererRD::DDGI);
+		ddgi = memnew(RendererRD::DDGI(is_using_radiance_octmap_array()));
 	}
 	if (!ddgi->prepare_frame(rb, settings, p_environment, p_scenario, p_camera_position, get_scene_pass(), r_bounds)) {
 		return disable_ddgi();

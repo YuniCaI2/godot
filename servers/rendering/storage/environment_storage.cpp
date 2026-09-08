@@ -896,7 +896,7 @@ RSE::EnvironmentSDFGIYScale RendererEnvironmentStorage::environment_get_sdfgi_y_
 
 // DDGI
 
-void RendererEnvironmentStorage::environment_set_ddgi(RID p_env, bool p_enable, const Vector3i &p_probe_count, const Vector3 &p_probe_spacing, int p_rays_per_probe, float p_max_ray_distance, float p_hysteresis, float p_normal_bias, float p_view_bias, float p_energy, bool p_read_sky) {
+void RendererEnvironmentStorage::environment_set_ddgi(RID p_env, bool p_enable, int p_debug_mode, const Vector3i &p_probe_count, const Vector3 &p_probe_spacing, int p_rays_per_probe, float p_max_ray_distance, float p_hysteresis, float p_normal_bias, float p_view_bias, float p_energy, bool p_read_sky) {
 	Environment *env = environment_owner.get_or_null(p_env);
 	ERR_FAIL_NULL(env);
 	ERR_FAIL_COND_MSG(!p_probe_spacing.is_finite(), "DDGI probe spacing must be finite.");
@@ -911,6 +911,7 @@ void RendererEnvironmentStorage::environment_set_ddgi(RID p_env, bool p_enable, 
 	}
 #endif
 	env->ddgi_enabled = p_enable;
+	env->ddgi_debug_mode = CLAMP(p_debug_mode, 0, 4);
 	env->ddgi_probe_count = Vector3i(
 			CLAMP(p_probe_count.x, 1, 64),
 			CLAMP(p_probe_count.y, 1, 64),
@@ -932,6 +933,12 @@ bool RendererEnvironmentStorage::environment_get_ddgi_enabled(RID p_env) const {
 	Environment *env = environment_owner.get_or_null(p_env);
 	ERR_FAIL_NULL_V(env, false);
 	return env->ddgi_enabled;
+}
+
+int RendererEnvironmentStorage::environment_get_ddgi_debug_mode(RID p_env) const {
+	Environment *env = environment_owner.get_or_null(p_env);
+	ERR_FAIL_NULL_V(env, 0);
+	return env->ddgi_debug_mode;
 }
 
 Vector3i RendererEnvironmentStorage::environment_get_ddgi_probe_count(RID p_env) const {

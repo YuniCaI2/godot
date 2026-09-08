@@ -1390,9 +1390,10 @@ public:
 	PASS1(environment_set_sdfgi_frames_to_update_light, RSE::EnvironmentSDFGIFramesToUpdateLight)
 
 	// DDGI
-	PASS11(environment_set_ddgi, RID, bool, const Vector3i &, const Vector3 &, int, float, float, float, float, float, bool)
+	PASS12(environment_set_ddgi, RID, bool, int, const Vector3i &, const Vector3 &, int, float, float, float, float, float, bool)
 
 	PASS1RC(bool, environment_get_ddgi_enabled, RID)
+	PASS1RC(int, environment_get_ddgi_debug_mode, RID)
 	PASS1RC(Vector3i, environment_get_ddgi_probe_count, RID)
 	PASS1RC(Vector3, environment_get_ddgi_probe_spacing, RID)
 	PASS1RC(int, environment_get_ddgi_rays_per_probe, RID)

@@ -10,11 +10,6 @@
 #define RT_LIGHT_TYPE_DIRECTIONAL 1 // Sun/moon with angular size
 #define RT_LIGHT_TYPE_SPOT 3 // Spot light with cone falloff
 
-// Reservoir sampling batch size for stochastic light selection.
-#ifndef RT_LIGHT_RESERVOIR_SIZE
-#define RT_LIGHT_RESERVOIR_SIZE 16
-#endif
-
 // ============================================================================
 // Light Data (matches C++ RT_LightData, 80 bytes, std430)
 // ============================================================================
@@ -109,7 +104,7 @@ LightSample lights_prepare_sample(vec3 hit_pos, RTLightData light) {
 
 // Sample a direction within the light's cone.
 vec3 lights_sample_cone(LightSample ls, vec2 u, out float pdf) {
-	float cos_theta = 1.0 - u.x * (1.0 - ls.cos_theta_max);
+	float cos_theta = 1.0 - u.x * (1.0 - ls.cos_theta_max); //这里插值的是cos 如果插值角度则不均匀
 	float sin_theta = sqrt(max(0.0, 1.0 - cos_theta * cos_theta));
 	float phi = 2.0 * PI * u.y;
 
@@ -253,57 +248,15 @@ bool lights_trace_shadow_ray(vec3 origin, vec3 direction, float max_dist, inout 
 // Next Event Estimation (NEE) - Direct Light Sampling
 // ============================================================================
 
-// Evaluate direct lighting using NEE with stochastic light selection.
-// Uses mini-batch reservoir sampling for importance-weighted light selection.
-vec3 lights_evaluate_direct_lighting(
+// Evaluate one light, including its visibility query.
+vec3 lights_evaluate_single_direct_lighting(
 		vec3 hit_pos,
 		vec3 N,
 		vec3 V,
 		MaterialProperties material,
 		inout uint rng_state,
 		bool is_indirect_bounce,
-		uint light_count) {
-	if (light_count == 0u) {
-		return vec3(0.0);
-	}
-
-	// Mini-batch reservoir sampling: sample k lights, pick the best valid one.
-	const uint k = uint(min(RT_LIGHT_RESERVOIR_SIZE, int(light_count)));
-	uint valid_found = 0u;
-	uint selected_idx = 0u;
-
-	for (uint i = 0u; i < k; i++) {
-		uint idx = min(uint(rand(rng_state) * float(light_count)), light_count - 1u);
-		RTLightData test_light = rt_lights[idx];
-
-		// Range check for positional lights.
-		bool is_positional = (test_light.type == RT_LIGHT_TYPE_OMNI || test_light.type == RT_LIGHT_TYPE_SPOT);
-		bool is_valid = !is_positional;
-		if (!is_valid) {
-			vec3 to_l = test_light.position - hit_pos;
-			float d2 = dot(to_l, to_l);
-			is_valid = (test_light.max_range_squared == 0.0 || d2 <= test_light.max_range_squared);
-		}
-
-		if (is_valid) {
-			valid_found++;
-			if (rand(rng_state) < 1.0 / float(valid_found)) {
-				selected_idx = idx;
-			}
-		}
-	}
-
-	if (valid_found == 0u) {
-		return vec3(0.0);
-	}
-
-	// Estimate valid count from sample ratio, PDF = 1/validCount.
-	float valid_count_estimate = float(light_count) * (float(valid_found) / float(k));
-	float light_select_pdf = 1.0 / max(valid_count_estimate, 1.0);
-
-	RTLightData light = rt_lights[selected_idx];
-	vec2 u = rand2(rng_state);
-
+		RTLightData light) {
 	// === POSITIONAL LIGHT PATH (omni + spot) ===
 	if (light.type == RT_LIGHT_TYPE_OMNI || light.type == RT_LIGHT_TYPE_SPOT) {
 		vec3 to_light = light.position - hit_pos;
@@ -325,6 +278,7 @@ vec3 lights_evaluate_direct_lighting(
 		} else {
 			// Sphere light: cone sampling for soft shadows.
 			LightSample ls = lights_prepare_sample(hit_pos, light);
+			vec2 u = rand2(rng_state);
 			float light_pdf;
 			L = lights_sample_cone(ls, u, light_pdf);
 			float t_center = dot(to_light, L);
@@ -343,6 +297,10 @@ vec3 lights_evaluate_direct_lighting(
 			}
 			float spot_rim = max(1e-4, (1.0 - scos) / (1.0 - light.cos_spot_angle));
 			spot_atten = 1.0 - pow(spot_rim, light.inv_spot_attenuation);
+		}
+
+		if (dot(N, L) <= 0.0) {
+			return vec3(0.0);
 		}
 
 		if (!lights_trace_shadow_ray(hit_pos, L, shadow_dist, rng_state)) {
@@ -365,13 +323,21 @@ vec3 lights_evaluate_direct_lighting(
 
 		// NdotL is already included in brdf_value (evalLambertian/evalMicrofacet bake it in).
 		vec3 contribution = brdf_value * light.emission * atten * indirect_mul;
-		return contribution / max(light_select_pdf, 1e-10);
+		return contribution;
 	}
 	// === CONE LIGHT PATH (directional) ===
 	else {
 		LightSample ls = lights_prepare_sample(hit_pos, light);
-		float light_pdf;
-		vec3 L = lights_sample_cone(ls, u, light_pdf);
+		vec3 L;
+		if (light.radius <= 0.00001) {
+			// Delta directional light: its direction is exact and has no
+			// continuous solid-angle PDF.
+			L = -normalize(light.position);
+		} else {
+			vec2 u = rand2(rng_state);
+			float light_pdf;
+			L = lights_sample_cone(ls, u, light_pdf);
+		}
 
 		float NdotL = dot(N, L);
 		if (NdotL <= 0.0) {
@@ -390,6 +356,30 @@ vec3 lights_evaluate_direct_lighting(
 
 		float indirect_mul = is_indirect_bounce ? light.indirect_energy : 1.0;
 
-		return brdf_value * light.emission * indirect_mul / max(light_select_pdf, 1e-10);
+		return brdf_value * light.emission * indirect_mul;
 	}
+}
+
+// Evaluate every uploaded light. The CPU bounds this list to RT_LIGHTS_MAX,
+// so direct-light cost remains finite and delta lights are noise-free.
+vec3 lights_evaluate_direct_lighting(
+		vec3 hit_pos,
+		vec3 N,
+		vec3 V,
+		MaterialProperties material,
+		inout uint rng_state,
+		bool is_indirect_bounce,
+		uint light_count) {
+	vec3 direct_lighting = vec3(0.0);
+	for (uint i = 0u; i < light_count; i++) {
+		direct_lighting += lights_evaluate_single_direct_lighting(
+				hit_pos,
+				N,
+				V,
+				material,
+				rng_state,
+				is_indirect_bounce,
+				rt_lights[i]);
+	}
+	return direct_lighting;
 }

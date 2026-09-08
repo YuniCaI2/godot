@@ -134,6 +134,12 @@ void RenderGeometryInstanceBase::set_cast_double_sided_shadows(bool p_enable) {
 	_mark_dirty();
 }
 
+void RenderGeometryInstanceBase::set_cast_shadows_only(bool p_enable) {
+	data->cast_shadows_only = p_enable;
+
+	_mark_dirty();
+}
+
 void RenderGeometryInstanceBase::reset_motion_vectors() {
 }
 

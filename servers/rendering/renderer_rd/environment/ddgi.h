@@ -34,6 +34,7 @@
 #include "core/string/string_name.h"
 #include "core/templates/rid.h"
 #include "servers/rendering/renderer_rd/shaders/environment/ddgi_resolve.glsl.gen.h"
+#include "servers/rendering/renderer_rd/shaders/raytracing/ddgi_gbuffer_raygen.glsl.gen.h"
 #include "servers/rendering/renderer_rd/storage_rd/render_buffer_custom_data_rd.h"
 
 #define RB_SCOPE_DDGI SNAME("ddgi")
@@ -51,6 +52,7 @@ struct RTSceneSnapshot;
 #define RB_TEX_GBUFFER_B SNAME("position_hit_t")
 #define RB_TEX_GBUFFER_C SNAME("normal")
 #define RB_TEX_GBUFFER_D SNAME("direct_diffuse")
+#define RB_TEX_GBUFFER_DEBUG SNAME("debug")
 
 namespace RendererRD {
 
@@ -102,6 +104,7 @@ public:
 	DDGIFrameGrid current_grid;
 	DDGIFrameGrid previous_grid;
 	uint64_t prepared_scene_pass = 0;
+	uint64_t committed_scene_pass = 0;
 	uint64_t snapshot_generation = 0;
 	uint32_t current_atlas_index = 0;
 	bool history_reset = true;
@@ -121,6 +124,7 @@ public:
 	void commit_frame(uint64_t p_snapshot_generation);
 	bool is_configured_for(const RenderSceneBuffersRD *p_render_buffers) const;
 	bool is_prepared_for_scene_pass(uint64_t p_scene_pass) const;
+	bool is_committed_for_scene_pass(uint64_t p_scene_pass) const;
 
 	virtual void configure(RenderSceneBuffersRD *p_render_buffers) override;
 	virtual void free_data() override;
@@ -128,20 +132,38 @@ public:
 };
 
 class DDGI {
+	struct GBufferPushConstant {
+		uint32_t light_count;
+		uint32_t frame_index;
+		float normal_bias;
+		float view_bias;
+		uint32_t debug_mode;
+		float pad[3];
+		float debug_bounds_min[4];
+		float debug_bounds_inv_size[4];
+	};
+
 	struct ResolvePushConstant {
 		int32_t screen_size[2];
 		float energy;
 		float pad;
 	};
 
+	DdgiGbufferRaygenShaderRD gbuffer_shader;
+	RID gbuffer_shader_version;
+	RID gbuffer_pipeline;
+	RID gbuffer_hit_sbt;
+	bool use_radiance_octmap_array = false;
+
 	DdgiResolveShaderRD resolve_shader;
+
 	RID resolve_shader_version;
 	RID resolve_pipeline;
 
 	static DDGIFrameGrid _build_frame_grid(const DDGISettings &p_settings, const Vector3 &p_camera_position);
 
 public:
-	DDGI();
+	DDGI(bool p_use_radiance_octmap_array);
 	~DDGI();
 
 	bool prepare_frame(const Ref<RenderSceneBuffersRD> &p_render_buffers, const DDGISettings &p_settings, RID p_environment, RID p_scenario, const Vector3 &p_camera_position, uint64_t p_scene_pass, AABB &r_expanded_bounds);
@@ -150,8 +172,19 @@ public:
 	bool ensure_ddgi_gbuffer_textures(const Ref<RenderSceneBuffersRD> &p_render_buffers, bool p_clear_existing = false);
 	bool clear_ddgi_gbuffer_textures(const Ref<RenderSceneBuffersRD> &p_render_buffers);
 
+	// Manages DDGIState::ray_data: one 16-byte result per probe/ray pair.
+	bool ensure_ddgi_probe_irradiance_buffer(const Ref<RenderSceneBuffersRD> &p_render_buffers, bool p_clear_existing = false);
+	bool clear_ddgi_probe_irradiance_buffer(const Ref<RenderSceneBuffersRD> &p_render_buffers);
+
 	bool ensure_gi_outputs(const Ref<RenderSceneBuffersRD> &p_render_buffers, bool p_clear_existing = false);
 	bool clear_gi_outputs(const Ref<RenderSceneBuffersRD> &p_render_buffers);
+
+	bool update_ddgi_gbuffer(
+			const Ref<DDGIState> &p_state,
+			const RendererSceneRenderImplementation::RTSceneSnapshot &p_snapshot,
+			RendererSceneRenderImplementation::RenderRaytracing &p_rt_service,
+			const RenderDataRD *p_render_data,
+			RID p_sky_radiance);
 
 	// Black-box boundary for the future probe core. Start its compute list here,
 	// bind DDGI-owned descriptors, and call

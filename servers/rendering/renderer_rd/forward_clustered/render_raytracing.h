@@ -337,7 +337,8 @@ struct RTSceneSnapshot {
 	bool is_valid() const {
 		return viewport_state &&
 				viewport_state->generation == generation &&
-				tlas.is_valid();
+				tlas.is_valid() &&
+				(instance_count == 0 || (geometry_buffer.is_valid() && material_buffer.is_valid()));
 	}
 
 private:
@@ -476,7 +477,7 @@ class RenderRaytracing {
 			RTSurfaceData *r_surf_data);
 	void update_procedural_blas(RTProceduralState *p_state, LocalVector<RID> &r_dirty_blas_list);
 	void build_acceleration_structures(RTViewportState *p_state, const LocalVector<RID> &p_dirty_blas_list, const LocalVector<RID> &p_dirty_blas_update_list);
-	void finalize_buffers(RTViewportState *p_state);
+	bool finalize_buffers(RTViewportState *p_state);
 	void prepare_frame();
 
 public:
@@ -515,6 +516,7 @@ public:
 
 	SceneShaderRaytracing *get_shader() const { return shader; }
 
+	RID finalize_bindless_uniform_set(RID p_shader, uint32_t p_set_index);
 	RID get_bindless_uniform_set() const { return bindless_uniform_set; }
 	RID get_mat_ubo_pool_buffer() const { return mat_ubo_pool_buffer; }
 

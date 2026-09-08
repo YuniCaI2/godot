@@ -893,12 +893,14 @@ public:
 
 	/* SDFGI UPDATE */
 
-	virtual bool ddgi_prepare_frame(const Ref<RenderSceneBuffers> &p_render_buffers, RID p_environment, RID p_scenario, const Vector3 &p_camera_position, AABB &r_bounds) override;
 	virtual void sdfgi_update(const Ref<RenderSceneBuffers> &p_render_buffers, RID p_environment, const Vector3 &p_world_position) override;
 	virtual int sdfgi_get_pending_region_count(const Ref<RenderSceneBuffers> &p_render_buffers) const override;
 	virtual AABB sdfgi_get_pending_region_bounds(const Ref<RenderSceneBuffers> &p_render_buffers, int p_region) const override;
 	virtual uint32_t sdfgi_get_pending_region_cascade(const Ref<RenderSceneBuffers> &p_render_buffers, int p_region) const override;
 	RID sdfgi_get_ubo() const { return gi.sdfgi_ubo; }
+
+	/* DDGI */
+	virtual bool ddgi_prepare_frame(const Ref<RenderSceneBuffers> &p_render_buffers, RID p_environment, RID p_scenario, const Vector3 &p_camera_position, AABB &r_bounds) override;
 
 	/* GEOMETRY INSTANCE */
 

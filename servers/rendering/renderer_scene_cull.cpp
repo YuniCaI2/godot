@@ -739,6 +739,7 @@ void RendererSceneCull::instance_set_base(RID p_instance, RID p_base) {
 				geom->geometry_instance->set_use_lightmap(RID(), instance->lightmap_uv_scale, instance->lightmap_slice_index);
 				geom->geometry_instance->set_instance_shader_uniforms_offset(instance->instance_uniforms.location());
 				geom->geometry_instance->set_cast_double_sided_shadows(instance->cast_shadows == RSE::SHADOW_CASTING_SETTING_DOUBLE_SIDED);
+				geom->geometry_instance->set_cast_shadows_only(instance->cast_shadows == RSE::SHADOW_CASTING_SETTING_SHADOWS_ONLY);
 				if (instance->lightmap_sh.size() == 9) {
 					geom->geometry_instance->set_lightmap_capture(instance->lightmap_sh.ptr());
 				}
@@ -1368,6 +1369,7 @@ void RendererSceneCull::instance_geometry_set_cast_shadows_setting(RID p_instanc
 		ERR_FAIL_NULL(geom->geometry_instance);
 
 		geom->geometry_instance->set_cast_double_sided_shadows(instance->cast_shadows == RSE::SHADOW_CASTING_SETTING_DOUBLE_SIDED);
+		geom->geometry_instance->set_cast_shadows_only(instance->cast_shadows == RSE::SHADOW_CASTING_SETTING_SHADOWS_ONLY);
 	}
 
 	_instance_queue_update(instance, false, true);
@@ -3467,7 +3469,13 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 		has_rt_bounds = true;
 	}
 	if (cull.rt_consumers.has_flag(RT_SCENE_CONSUMER_DDGI)) {
-		cull.rt_aabb = has_rt_bounds ? cull.rt_aabb.merge(ddgi_bounds) : ddgi_bounds;
+		if (!has_rt_bounds) {
+			const float z_far = p_camera_data->main_projection.get_z_far();
+			const Vector3 cam_origin = p_camera_data->main_transform.origin;
+			cull.rt_aabb = AABB(cam_origin - Vector3(z_far, z_far, z_far), Vector3(z_far, z_far, z_far) * 2.0);
+		}
+		cull.rt_aabb = cull.rt_aabb.merge(ddgi_bounds);
+		cull.rt_include_frustum = true;
 		has_rt_bounds = true;
 	}
 	if (!has_rt_bounds) {

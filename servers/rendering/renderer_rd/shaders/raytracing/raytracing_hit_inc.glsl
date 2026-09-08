@@ -31,13 +31,13 @@ struct TBNResult {
 
 /// Core implementation taking an explicit primitive ID (works in any shader stage).
 void get_triangle_indices_ex(in GeometryData geom, uint primitive_id, out uint i0, out uint i1, out uint i2) {
-	if (geom.index_format == 2u) {
+	if (geom.index_format == 2u) { //index format 2 则没有index ， 直接使用triangle id
 		i0 = primitive_id * 3u;
 		i1 = primitive_id * 3u + 1u;
 		i2 = primitive_id * 3u + 2u;
 	} else if (geom.index_address != 0ul) {
 		Uint32Buffer idx = Uint32Buffer(geom.index_address);
-		if (geom.index_format == 0u) {
+		if (geom.index_format == 0u) { //index format 0 则uint16
 			uint byte_off = primitive_id * 6u;
 			uint word0 = idx.v[byte_off >> 2];
 			uint word1 = idx.v[(byte_off >> 2) + 1u];
@@ -60,10 +60,13 @@ void get_triangle_indices_ex(in GeometryData geom, uint primitive_id, out uint i
 	}
 }
 
-/// Convenience wrapper using gl_PrimitiveID (hit shaders only).
+// Convenience wrapper using gl_PrimitiveID (hit shaders only). Raygen shaders
+// can still include this file and use get_triangle_indices_ex() with ray query.
+#if defined(RT_STAGE_CLOSEST_HIT) || defined(RT_STAGE_ANY_HIT) || defined(RT_STAGE_INTERSECTION)
 void get_triangle_indices(in GeometryData geom, out uint i0, out uint i1, out uint i2) {
 	get_triangle_indices_ex(geom, gl_PrimitiveID, i0, i1, i2);
 }
+#endif
 
 // ============================================================================
 // UV FETCHING
