@@ -367,13 +367,11 @@ void DDGIState::prepare_frame(const DDGISettings &p_settings, RID p_environment,
 			const bool integer_scroll =
 					Math::is_equal_approx(cell_delta.x, real_t(integer_delta.x)) &&
 					Math::is_equal_approx(cell_delta.y, real_t(integer_delta.y)) &&
-					Math::is_equal_approx(cell_delta.z, real_t(integer_delta.z));
+					Math::is_equal_approx(cell_delta.z, real_t(integer_delta.z)) && 
+					Math::abs(integer_delta.x) < p_grid.probe_count.x && Math::abs(integer_delta.y) < p_grid.probe_count.y && Math::abs(integer_delta.z) < p_grid.probe_count.z;
 			if (integer_scroll) {
 				next_grid.scroll_delta = integer_delta;
-				scroll_requires_reset =
-						integer_delta.x <= -p_settings.probe_count.x || integer_delta.x >= p_settings.probe_count.x ||
-						integer_delta.y <= -p_settings.probe_count.y || integer_delta.y >= p_settings.probe_count.y ||
-						integer_delta.z <= -p_settings.probe_count.z || integer_delta.z >= p_settings.probe_count.z;
+				scroll_requires_reset = false;
 			} else {
 				scroll_requires_reset = true;
 			}
@@ -502,6 +500,7 @@ void DDGIState::commit_frame(uint64_t p_snapshot_generation) {
 
 	snapshot_generation = p_snapshot_generation;
 	committed_scene_pass = prepared_scene_pass;
+	current_atlas_index = 1u - current_atlas_index;
 	history_reset = false;
 }
 
@@ -582,7 +581,7 @@ DDGIFrameGrid DDGI::_build_frame_grid(const DDGISettings &p_settings, const Vect
 		return grid;
 	}
 
-	grid.origin = centered_origin.snapped(p_settings.probe_spacing);
+	grid.origin = centered_origin.snapped(p_settings.probe_spacing); //对齐步长
 	grid.probe_bounds = AABB(grid.origin, grid_size);
 
 	const float max_spacing = MAX(p_settings.probe_spacing.x, MAX(p_settings.probe_spacing.y, p_settings.probe_spacing.z));
@@ -627,6 +626,42 @@ DDGI::DDGI(bool p_use_radiance_octmap_array) {
 		}
 	}
 
+	probe_update_shader.initialize(shader_modes, gbuffer_defines);
+	probe_update_shader_version = probe_update_shader.version_create();
+	const RID probe_update_shader_rid =
+			probe_update_shader.version_get_shader(probe_update_shader_version, 0);
+	if (probe_update_shader_rid.is_valid()) {
+		const RD::PipelineShader pipeline_shader = { probe_update_shader_rid, {} };
+		const RD::HitGroup empty_hit_group;
+		probe_update_pipeline = RD::get_singleton()->raytracing_pipeline_create(
+				{ &pipeline_shader, 1 },
+				{},
+				{ &empty_hit_group, 1 },
+				1);
+	}
+	if (probe_update_pipeline.is_valid()) {
+		probe_update_hit_sbt = RD::get_singleton()->hit_sbt_create(probe_update_pipeline, 1);
+		if (probe_update_hit_sbt.is_valid()) {
+			const RD::HitShaderBindingTableRange range =
+					RD::get_singleton()->hit_sbt_range_alloc(probe_update_hit_sbt, 1);
+			const uint32_t empty_hit_group_index = 0;
+			if (!range ||
+					RD::get_singleton()->hit_sbt_range_update(
+							probe_update_hit_sbt,
+							range,
+							0,
+							{ &empty_hit_group_index, 1 }) != OK) {
+				RD::get_singleton()->free_rid(probe_update_hit_sbt);
+				probe_update_hit_sbt = RID();
+			}
+		}
+	}
+
+	probe_blend_shader.initialize(shader_modes);
+	probe_blend_shader_version = probe_blend_shader.version_create();
+	probe_blend_pipeline = RD::get_singleton()->compute_pipeline_create(
+			probe_blend_shader.version_get_shader(probe_blend_shader_version, 0));
+
 	resolve_shader.initialize(shader_modes);
 	resolve_shader_version = resolve_shader.version_create();
 	resolve_pipeline = RD::get_singleton()->compute_pipeline_create(resolve_shader.version_get_shader(resolve_shader_version, 0));
@@ -644,6 +679,28 @@ DDGI::~DDGI() {
 	if (gbuffer_shader_version.is_valid()) {
 		gbuffer_shader.version_free(gbuffer_shader_version);
 		gbuffer_shader_version = RID();
+	}
+
+	if (probe_update_hit_sbt.is_valid()) {
+		RD::get_singleton()->free_rid(probe_update_hit_sbt);
+		probe_update_hit_sbt = RID();
+	}
+	if (probe_update_pipeline.is_valid()) {
+		RD::get_singleton()->free_rid(probe_update_pipeline);
+		probe_update_pipeline = RID();
+	}
+	if (probe_update_shader_version.is_valid()) {
+		probe_update_shader.version_free(probe_update_shader_version);
+		probe_update_shader_version = RID();
+	}
+
+	if (probe_blend_pipeline.is_valid()) {
+		RD::get_singleton()->free_rid(probe_blend_pipeline);
+		probe_blend_pipeline = RID();
+	}
+	if (probe_blend_shader_version.is_valid()) {
+		probe_blend_shader.version_free(probe_blend_shader_version);
+		probe_blend_shader_version = RID();
 	}
 
 	if (resolve_pipeline.is_valid()) {
@@ -1036,6 +1093,11 @@ bool DDGI::update_probes(
 	ERR_FAIL_COND_V(!p_state->current_grid.valid || p_state->prepared_scene_pass == 0, false);
 	ERR_FAIL_COND_V(!p_snapshot.is_valid(), false);
 	ERR_FAIL_COND_V(!p_snapshot.consumers.has_flag(RT_SCENE_CONSUMER_DDGI), false);
+	ERR_FAIL_COND_V(
+			!probe_update_pipeline.is_valid() ||
+					!probe_update_hit_sbt.is_valid() ||
+					!probe_blend_pipeline.is_valid(),
+			false);
 
 	if (!p_state->resources_ready) {
 		return false;
@@ -1067,32 +1129,206 @@ bool DDGI::update_probes(
 		return false;
 	}
 
-	// Future DDGI core hook:
-	//   1. Start a compute list here.
-	//   2. Bind a DDGI-owned descriptor set built from p_snapshot, rt_instances,
-	//      rt_lights, p_sky_radiance, and this state's probe resources.
-	//   3. Call p_rt_service.register_compute_dependencies(list, p_snapshot)
-	//      before any dispatch that follows BDA references.
-	// No PT uniform set, color output, or depth output is touched by this facade.
-	const PagedArray<RenderGeometryInstance *> *rt_instances = p_render_data->rt_instances;
-	const PagedArray<RID> *rt_lights = p_render_data->rt_lights;
-	(void)p_rt_service;
-	(void)rt_instances;
-	(void)rt_lights;
-	(void)p_sky_radiance;
+	RendererSceneRenderImplementation::RTViewportState *rt_state =
+			p_rt_service.get_viewport_state(p_snapshot);
+	ERR_FAIL_NULL_V(rt_state, false);
 
-	// Do not advance snapshot/history state here. The raster integration commits
-	// it only after the screen resolve has also been recorded successfully.
+	RendererSceneRenderImplementation::RT_LightData light_data[RendererSceneRenderImplementation::RT_LIGHTS_MAX] = {};
+	const uint32_t light_count = p_rt_service.gather_lights(
+			p_render_data,
+			light_data,
+			RendererSceneRenderImplementation::RT_LIGHTS_MAX);
+	const uint32_t light_buffer_size =
+			RendererSceneRenderImplementation::RT_LIGHTS_MAX *
+			sizeof(RendererSceneRenderImplementation::RT_LightData);
+	if (!rt_state->light_buffer.is_valid()) {
+		rt_state->light_buffer = RD::get_singleton()->storage_buffer_create(light_buffer_size);
+		if (rt_state->light_buffer.is_valid()) {
+			RD::get_singleton()->set_resource_name(rt_state->light_buffer, "DDGI Light Buffer");
+		}
+	}
+	if (!rt_state->light_buffer.is_valid() ||
+			RD::get_singleton()->buffer_update(rt_state->light_buffer, 0, light_buffer_size, light_data) != OK) {
+		return false;
+	}
+
+	TextureStorage *texture_storage = TextureStorage::get_singleton();
+	ERR_FAIL_NULL_V(texture_storage, false);
+	MaterialStorage *material_storage = MaterialStorage::get_singleton();
+	ERR_FAIL_NULL_V(material_storage, false);
+	MeshStorage *mesh_storage = MeshStorage::get_singleton();
+	ERR_FAIL_NULL_V(mesh_storage, false);
+
+	RID sky_radiance = p_state->settings.read_sky ? p_sky_radiance : RID();
+	if (!sky_radiance.is_valid()) {
+		sky_radiance = texture_storage->texture_rd_get_default(
+				use_radiance_octmap_array
+						? TextureStorage::DEFAULT_RD_TEXTURE_2D_ARRAY_BLACK
+						: TextureStorage::DEFAULT_RD_TEXTURE_BLACK);
+	}
+
+	const uint32_t history_atlas_index = p_state->current_atlas_index;
+	const uint32_t output_atlas_index = 1u - history_atlas_index;
+	ERR_FAIL_COND_V(
+			!p_state->irradiance_atlas[history_atlas_index].is_valid() ||
+					!p_state->distance_atlas[history_atlas_index].is_valid() ||
+					!p_state->irradiance_atlas[output_atlas_index].is_valid() ||
+					!p_state->distance_atlas[output_atlas_index].is_valid(),
+			false);
+
+	const RID scene_uniform_buffer = p_render_data->scene_data->get_uniform_buffer();
+	ERR_FAIL_COND_V(!scene_uniform_buffer.is_valid(), false);
+	ERR_FAIL_COND_V(
+			p_snapshot.instance_count > 0 &&
+					(!p_snapshot.geometry_buffer.is_valid() || !p_snapshot.material_buffer.is_valid()),
+			false);
+	const RID default_storage_buffer = mesh_storage->get_default_rd_storage_buffer();
+	const RID radiance_sampler = material_storage->sampler_rd_get_default(
+			RSE::CANVAS_ITEM_TEXTURE_FILTER_LINEAR_WITH_MIPMAPS,
+			RSE::CANVAS_ITEM_TEXTURE_REPEAT_DISABLED);
+	const RID ddgi_linear_sampler = material_storage->sampler_rd_get_default(
+			RSE::CANVAS_ITEM_TEXTURE_FILTER_LINEAR,
+			RSE::CANVAS_ITEM_TEXTURE_REPEAT_DISABLED);
+
+	const RID probe_update_shader_rid =
+			probe_update_shader.version_get_shader(probe_update_shader_version, 0);
+	ERR_FAIL_COND_V(!probe_update_shader_rid.is_valid(), false);
+
+	LocalVector<RD::Uniform> trace_uniforms;
+	trace_uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 0, p_state->grid_uniform_buffer));
+	trace_uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_ACCELERATION_STRUCTURE, 1, p_snapshot.tlas));
+	trace_uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 2, scene_uniform_buffer));
+	trace_uniforms.push_back(RD::Uniform(
+			RD::UNIFORM_TYPE_STORAGE_BUFFER,
+			3,
+			p_snapshot.geometry_buffer.is_valid() ? p_snapshot.geometry_buffer : default_storage_buffer));
+	trace_uniforms.push_back(RD::Uniform(
+			RD::UNIFORM_TYPE_STORAGE_BUFFER,
+			5,
+			p_snapshot.material_buffer.is_valid() ? p_snapshot.material_buffer : default_storage_buffer));
+	trace_uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, 7, sky_radiance));
+	trace_uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_SAMPLER, 8, radiance_sampler));
+	trace_uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 13, rt_state->light_buffer));
+	trace_uniforms.push_back(RD::Uniform(
+			RD::UNIFORM_TYPE_SAMPLER,
+			24,
+			material_storage->sampler_rd_get_default(
+					RSE::CANVAS_ITEM_TEXTURE_FILTER_NEAREST_WITH_MIPMAPS,
+					RSE::CANVAS_ITEM_TEXTURE_REPEAT_ENABLED)));
+	trace_uniforms.push_back(RD::Uniform(
+			RD::UNIFORM_TYPE_SAMPLER,
+			25,
+			material_storage->sampler_rd_get_default(
+					RSE::CANVAS_ITEM_TEXTURE_FILTER_LINEAR_WITH_MIPMAPS,
+					RSE::CANVAS_ITEM_TEXTURE_REPEAT_ENABLED)));
+	trace_uniforms.push_back(RD::Uniform(
+			RD::UNIFORM_TYPE_TEXTURE,
+			26,
+			p_state->irradiance_atlas[history_atlas_index]));
+	trace_uniforms.push_back(RD::Uniform(
+			RD::UNIFORM_TYPE_TEXTURE,
+			27,
+			p_state->distance_atlas[history_atlas_index]));
+	trace_uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_SAMPLER, 28, ddgi_linear_sampler));
+	trace_uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 29, p_state->ray_data));
+
+	UniformSetCacheRD *uniform_set_cache = UniformSetCacheRD::get_singleton();
+	ERR_FAIL_NULL_V(uniform_set_cache, false);
+	const RID trace_uniform_set =
+			uniform_set_cache->get_cache_vec(probe_update_shader_rid, 0, trace_uniforms);
+	ERR_FAIL_COND_V(
+			!trace_uniform_set.is_valid() ||
+					!RD::get_singleton()->uniform_set_is_valid(trace_uniform_set),
+			false);
+	const RID bindless_set =
+			p_rt_service.finalize_bindless_uniform_set(probe_update_shader_rid, 1);
+	ERR_FAIL_COND_V(
+			!bindless_set.is_valid() ||
+					!RD::get_singleton()->uniform_set_is_valid(bindless_set),
+			false);
+
+	const RID probe_blend_shader_rid =
+			probe_blend_shader.version_get_shader(probe_blend_shader_version, 0);
+	ERR_FAIL_COND_V(!probe_blend_shader_rid.is_valid(), false);
+	LocalVector<RD::Uniform> blend_uniforms;
+	blend_uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 0, p_state->grid_uniform_buffer));
+	blend_uniforms.push_back(RD::Uniform(
+			RD::UNIFORM_TYPE_TEXTURE,
+			26,
+			p_state->irradiance_atlas[history_atlas_index]));
+	blend_uniforms.push_back(RD::Uniform(
+			RD::UNIFORM_TYPE_TEXTURE,
+			27,
+			p_state->distance_atlas[history_atlas_index]));
+	blend_uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_SAMPLER, 28, ddgi_linear_sampler));
+	blend_uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 29, p_state->ray_data));
+	blend_uniforms.push_back(RD::Uniform(
+			RD::UNIFORM_TYPE_IMAGE,
+			30,
+			p_state->irradiance_atlas[output_atlas_index]));
+	blend_uniforms.push_back(RD::Uniform(
+			RD::UNIFORM_TYPE_IMAGE,
+			31,
+			p_state->distance_atlas[output_atlas_index]));
+	const RID blend_uniform_set =
+			uniform_set_cache->get_cache_vec(probe_blend_shader_rid, 0, blend_uniforms);
+	ERR_FAIL_COND_V(
+			!blend_uniform_set.is_valid() ||
+					!RD::get_singleton()->uniform_set_is_valid(blend_uniform_set),
+			false);
+
+	ProbeUpdatePushConstant push_constant = {};
+	push_constant.light_count = light_count;
+	static_assert(sizeof(ProbeUpdatePushConstant) == 16);
+
+	RD::get_singleton()->draw_command_begin_label("DDGI Probe Update");
+	RD::RaytracingListID raytracing_list = RD::get_singleton()->raytracing_list_begin();
+	RD::get_singleton()->raytracing_list_bind_raytracing_pipeline(raytracing_list, probe_update_pipeline);
+	RD::get_singleton()->raytracing_list_bind_uniform_set(raytracing_list, trace_uniform_set, 0);
+	RD::get_singleton()->raytracing_list_bind_uniform_set(raytracing_list, bindless_set, 1);
+	p_rt_service.register_raytracing_buffer_dependencies(raytracing_list, p_snapshot);
+	RD::get_singleton()->raytracing_list_set_push_constant(
+			raytracing_list,
+			&push_constant,
+			sizeof(ProbeUpdatePushConstant));
+	RD::get_singleton()->raytracing_list_trace_rays(
+			raytracing_list,
+			0,
+			probe_update_hit_sbt,
+			p_state->settings.rays_per_probe,
+			uint32_t(p_state->settings.probe_count.x * p_state->settings.probe_count.y),
+			uint32_t(p_state->settings.probe_count.z));
+	RD::get_singleton()->raytracing_list_end();
+
+	const uint32_t distance_width =
+			uint32_t(p_state->settings.probe_count.x) *
+			(DDGI_DISTANCE_TEXELS + DDGI_ATLAS_BORDER * 2);
+	const uint32_t distance_height =
+			uint32_t(p_state->settings.probe_count.y) *
+			(DDGI_DISTANCE_TEXELS + DDGI_ATLAS_BORDER * 2);
+	RD::ComputeListID compute_list = RD::get_singleton()->compute_list_begin();
+	RD::get_singleton()->compute_list_bind_compute_pipeline(compute_list, probe_blend_pipeline);
+	RD::get_singleton()->compute_list_bind_uniform_set(compute_list, blend_uniform_set, 0);
+	RD::get_singleton()->compute_list_dispatch_threads(
+			compute_list,
+			distance_width,
+			distance_height,
+			uint32_t(p_state->settings.probe_count.z));
+	RD::get_singleton()->compute_list_end();
+	RD::get_singleton()->draw_command_end_label();
+
 	return true;
 }
 
 bool DDGI::resolve(
 		const Ref<DDGIState> &p_state,
 		const Ref<RenderSceneBuffersRD> &p_render_buffers,
+		const RenderDataRD *p_render_data,
 		RID p_depth,
 		RID p_normal_roughness) {
 	ERR_FAIL_COND_V(p_state.is_null(), false);
 	ERR_FAIL_COND_V(p_render_buffers.is_null(), false);
+	ERR_FAIL_NULL_V(p_render_data, false);
 	ERR_FAIL_COND_V(!p_state->resources_ready, false);
 	ERR_FAIL_COND_V(!p_depth.is_valid() || !p_normal_roughness.is_valid(), false);
 
@@ -1111,22 +1347,53 @@ bool DDGI::resolve(
 	push_constant.screen_size[1] = screen_size.y;
 	push_constant.energy = p_state->settings.energy;
 
-	const RID sampler = material_storage->sampler_rd_get_default(
+	const RID nearest_sampler = material_storage->sampler_rd_get_default(
 			RSE::CANVAS_ITEM_TEXTURE_FILTER_NEAREST,
+			RSE::CANVAS_ITEM_TEXTURE_REPEAT_DISABLED);
+	const RID linear_sampler = material_storage->sampler_rd_get_default(
+			RSE::CANVAS_ITEM_TEXTURE_FILTER_LINEAR,
 			RSE::CANVAS_ITEM_TEXTURE_REPEAT_DISABLED);
 	const RID shader = resolve_shader.version_get_shader(resolve_shader_version, 0);
 	ERR_FAIL_COND_V(!shader.is_valid() || !resolve_pipeline.is_valid(), false);
 
-	RD::Uniform u_depth(RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 0, Vector<RID>({ sampler, p_depth }));
-	RD::Uniform u_normal_roughness(RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 1, Vector<RID>({ sampler, p_normal_roughness }));
-	RD::Uniform u_ambient(RD::UNIFORM_TYPE_IMAGE, 2, p_render_buffers->get_texture(RB_SCOPE_GI, RB_TEX_AMBIENT));
-	RD::Uniform u_reflection(RD::UNIFORM_TYPE_IMAGE, 3, p_render_buffers->get_texture(RB_SCOPE_GI, RB_TEX_REFLECTION));
-	const RID uniform_set = uniform_set_cache->get_cache(shader, 0, u_depth, u_normal_roughness, u_ambient, u_reflection);
+	const RID scene_uniform_buffer = p_render_data->scene_data->get_uniform_buffer();
+	ERR_FAIL_COND_V(!scene_uniform_buffer.is_valid(), false);
+	const uint32_t output_atlas_index = 1u - p_state->current_atlas_index;
+
+	LocalVector<RD::Uniform> uniforms;
+	uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 0, p_state->grid_uniform_buffer));
+	uniforms.push_back(RD::Uniform(
+			RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE,
+			1,
+			Vector<RID>({ nearest_sampler, p_depth })));
+	uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 2, scene_uniform_buffer));
+	uniforms.push_back(RD::Uniform(
+			RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE,
+			3,
+			Vector<RID>({ nearest_sampler, p_normal_roughness })));
+	uniforms.push_back(RD::Uniform(
+			RD::UNIFORM_TYPE_IMAGE,
+			4,
+			p_render_buffers->get_texture(RB_SCOPE_GI, RB_TEX_AMBIENT)));
+	uniforms.push_back(RD::Uniform(
+			RD::UNIFORM_TYPE_IMAGE,
+			5,
+			p_render_buffers->get_texture(RB_SCOPE_GI, RB_TEX_REFLECTION)));
+	uniforms.push_back(RD::Uniform(
+			RD::UNIFORM_TYPE_TEXTURE,
+			26,
+			p_state->irradiance_atlas[output_atlas_index]));
+	uniforms.push_back(RD::Uniform(
+			RD::UNIFORM_TYPE_TEXTURE,
+			27,
+			p_state->distance_atlas[output_atlas_index]));
+	uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_SAMPLER, 28, linear_sampler));
+	const RID uniform_set = uniform_set_cache->get_cache_vec(shader, 0, uniforms);
 	if (!uniform_set.is_valid() || !RD::get_singleton()->uniform_set_is_valid(uniform_set)) {
 		return false;
 	}
 
-	RD::get_singleton()->draw_command_begin_label("DDGI Diagnostic Resolve");
+	RD::get_singleton()->draw_command_begin_label("DDGI Resolve");
 	RD::ComputeListID compute_list = RD::get_singleton()->compute_list_begin();
 	RD::get_singleton()->compute_list_bind_compute_pipeline(compute_list, resolve_pipeline);
 	RD::get_singleton()->compute_list_bind_uniform_set(compute_list, uniform_set, 0);

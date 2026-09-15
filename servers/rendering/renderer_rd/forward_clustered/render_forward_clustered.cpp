@@ -2426,7 +2426,7 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 		fail_ddgi_frame();
 	}
 	if (ddgi_frame_ready && !ddgi->update_probes(ddgi_state, ddgi_snapshot, *raytracing, p_render_data, radiance_texture)) {
-		WARN_PRINT_ONCE("DDGI probe update preparation failed; clearing its diagnostic output for this frame.");
+		WARN_PRINT_ONCE("DDGI probe update failed; clearing its output for this frame.");
 		fail_ddgi_frame();
 	}
 
@@ -2521,8 +2521,8 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 		RENDER_TIMESTAMP("Resolve DDGI");
 		const RID resolved_depth = rb->get_depth_texture(0);
 		const RID resolved_normal_roughness = rb_data->get_normal_roughness(0);
-		if (!depth_pre_pass || !ddgi->resolve(ddgi_state, rb, resolved_depth, resolved_normal_roughness)) {
-			WARN_PRINT_ONCE("DDGI diagnostic resolve failed; clearing its output for this frame.");
+		if (!depth_pre_pass || !ddgi->resolve(ddgi_state, rb, p_render_data, resolved_depth, resolved_normal_roughness)) {
+			WARN_PRINT_ONCE("DDGI resolve failed; clearing its output for this frame.");
 			fail_ddgi_frame();
 		} else {
 			ddgi_state->commit_frame(ddgi_snapshot.generation);

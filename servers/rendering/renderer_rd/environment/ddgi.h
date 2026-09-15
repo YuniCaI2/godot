@@ -33,6 +33,8 @@
 #include "core/math/vector3i.h"
 #include "core/string/string_name.h"
 #include "core/templates/rid.h"
+#include "servers/rendering/renderer_rd/shaders/environment/ddgi_probe_blend.glsl.gen.h"
+#include "servers/rendering/renderer_rd/shaders/environment/ddgi_probe_update.glsl.gen.h"
 #include "servers/rendering/renderer_rd/shaders/environment/ddgi_resolve.glsl.gen.h"
 #include "servers/rendering/renderer_rd/shaders/raytracing/ddgi_gbuffer_raygen.glsl.gen.h"
 #include "servers/rendering/renderer_rd/storage_rd/render_buffer_custom_data_rd.h"
@@ -120,7 +122,7 @@ public:
 
 	void prepare_frame(const DDGISettings &p_settings, RID p_environment, RID p_scenario, const DDGIFrameGrid &p_grid, uint64_t p_scene_pass);
 	bool ensure_probe_resources();
-	// Called only after the diagnostic resolve was successfully recorded.
+	// Publishes the atlas written by update_probes after resolve succeeds.
 	void commit_frame(uint64_t p_snapshot_generation);
 	bool is_configured_for(const RenderSceneBuffersRD *p_render_buffers) const;
 	bool is_prepared_for_scene_pass(uint64_t p_scene_pass) const;
@@ -143,6 +145,11 @@ class DDGI {
 		float debug_bounds_inv_size[4];
 	};
 
+	struct ProbeUpdatePushConstant {
+		uint32_t light_count;
+		uint32_t pad[3];
+	};
+
 	struct ResolvePushConstant {
 		int32_t screen_size[2];
 		float energy;
@@ -154,6 +161,15 @@ class DDGI {
 	RID gbuffer_pipeline;
 	RID gbuffer_hit_sbt;
 	bool use_radiance_octmap_array = false;
+
+	DdgiProbeUpdateShaderRD probe_update_shader;
+	RID probe_update_shader_version;
+	RID probe_update_pipeline;
+	RID probe_update_hit_sbt;
+
+	DdgiProbeBlendShaderRD probe_blend_shader;
+	RID probe_blend_shader_version;
+	RID probe_blend_pipeline;
 
 	DdgiResolveShaderRD resolve_shader;
 
@@ -186,10 +202,8 @@ public:
 			const RenderDataRD *p_render_data,
 			RID p_sky_radiance);
 
-	// Black-box boundary for the future probe core. Start its compute list here,
-	// bind DDGI-owned descriptors, and call
-	// RenderRaytracing::register_compute_dependencies() before dispatching any
-	// shader that dereferences scene buffers through device addresses.
+	// Traces one radiance/distance sample set per probe and blends it into the
+	// next irradiance/distance atlas using the currently committed atlas as history.
 	bool update_probes(
 			const Ref<DDGIState> &p_state,
 			const RendererSceneRenderImplementation::RTSceneSnapshot &p_snapshot,
@@ -197,11 +211,10 @@ public:
 			const RenderDataRD *p_render_data,
 			RID p_sky_radiance);
 
-	// Diagnostic screen resolve. This deliberately does not implement DDGI
-	// sampling; it only proves the raster GI-buffer connection.
 	bool resolve(
 			const Ref<DDGIState> &p_state,
 			const Ref<RenderSceneBuffersRD> &p_render_buffers,
+			const RenderDataRD *p_render_data,
 			RID p_depth,
 			RID p_normal_roughness);
 };

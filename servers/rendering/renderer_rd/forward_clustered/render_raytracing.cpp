@@ -3317,6 +3317,18 @@ RID RenderRaytracing::update_uniform_set(RTViewportState *p_state, const RenderD
 	return result;
 }
 
+RID RenderRaytracing::finalize_bindless_uniform_set(RID p_shader, uint32_t p_set_index) {
+	ERR_FAIL_NULL_V(bindless_block, RID());
+	ERR_FAIL_COND_V(!p_shader.is_valid(), RID());
+
+	if (!bindless_block->is_initialized()) {
+		bindless_block->initialize(RD::get_singleton());
+	}
+	bindless_block->finalize(p_shader, p_set_index);
+	bindless_uniform_set = bindless_block->get_uniform_set();
+	return bindless_uniform_set;
+}
+
 // ---------------------------------------------------------------------------
 // Trace-time buffer dependencies
 // ---------------------------------------------------------------------------
