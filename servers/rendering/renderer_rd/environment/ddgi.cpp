@@ -1046,6 +1046,7 @@ bool DDGI::update_ddgi_gbuffer(
 	GBufferPushConstant push_constant = {};
 	push_constant.light_count = light_count;
 	push_constant.frame_index = uint32_t(p_state->prepared_scene_pass);
+	// push_constant.frame_index = 0; //Debug 排除时阈
 	push_constant.normal_bias = p_state->settings.normal_bias;
 	push_constant.view_bias = p_state->settings.view_bias;
 	RendererEnvironmentStorage *environment_storage = RendererEnvironmentStorage::get_singleton();
@@ -1123,6 +1124,8 @@ bool DDGI::update_probes(
 	grid_data.energy = p_state->settings.energy;
 	grid_data.rays_per_probe = p_state->settings.rays_per_probe;
 	grid_data.frame_index = uint32_t(p_state->prepared_scene_pass);
+	// grid_data.frame_index = 0; //Debug 排除时阈
+
 	grid_data.current_atlas_index = p_state->current_atlas_index;
 	grid_data.history_reset = p_state->history_reset ? 1 : 0;
 	if (RD::get_singleton()->buffer_update(p_state->grid_uniform_buffer, 0, sizeof(DDGIGridData), &grid_data) != OK) {

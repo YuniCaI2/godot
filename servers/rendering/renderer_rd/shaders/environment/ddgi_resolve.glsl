@@ -64,11 +64,11 @@ void main() {
 	vec3 encoded_normal =
 			texelFetch(source_normal_roughness, pixel, 0).xyz * 2.0 - 1.0;
 	float normal_length_squared = dot(encoded_normal, encoded_normal);
-	if (depth > 0.0 && normal_length_squared > 0.25) {
+	if (depth > 0.0 && normal_length_squared > 1e-8) {
 		mat4 inverse_view = get_inverse_view_matrix();
 		vec3 world_position =
 				reconstruct_world_position(pixel, depth, inverse_view);
-		vec3 view_normal = encoded_normal * inversesqrt(normal_length_squared);
+		vec3 view_normal = encoded_normal * inversesqrt(normal_length_squared); //变为单位向量
 		vec3 world_normal = normalize(mat3(inverse_view) * view_normal);
 		vec3 camera_position = inverse_view[3].xyz;
 		vec3 ray_direction =
